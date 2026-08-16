@@ -1,0 +1,8 @@
+/castr
+/castrd
+/castr-tui
+/dist/
+*.pkg.tar.zst
+*.tar.gz
+pkg/
+src/
