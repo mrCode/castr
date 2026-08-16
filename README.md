@@ -22,6 +22,8 @@ omarchy-cast   14 packages
 castr           1 package (avahi) + doubletake
 ```
 
+Status and next steps live in [PROGRESS.md](PROGRESS.md).
+
 See [docs/design.md](docs/design.md), whose most important section is *"What
 the rewrite must not lose"* — every bug the Python version already shipped and
 fixed, restated as a required test so this one does not rediscover them.
