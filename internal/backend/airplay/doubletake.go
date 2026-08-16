@@ -7,6 +7,7 @@ package airplay
 import (
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Binary is the program we supervise.
@@ -95,12 +96,18 @@ const maxBuffer = 16384
 //
 // It scans accumulated text rather than whole lines because the PIN prompt
 // arrives without a newline and would otherwise never be noticed.
+//
+// Safe for concurrent use: one goroutine reads the child's output into it
+// while another waits on what it has seen.
 type Scanner struct {
+	mu   sync.Mutex
 	text string
 }
 
 // Absorb adds a chunk of output.
 func (s *Scanner) Absorb(chunk string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.text += chunk
 	if len(s.text) > maxBuffer {
 		s.text = s.text[len(s.text)-maxBuffer:]
@@ -108,10 +115,16 @@ func (s *Scanner) Absorb(chunk string) {
 }
 
 // Ready reports whether capture has actually started.
-func (s *Scanner) Ready() bool { return strings.Contains(s.text, ReadyMarker) }
+func (s *Scanner) Ready() bool { return s.contains(ReadyMarker) }
 
 // NeedsPin reports whether the receiver is waiting for a pairing code.
-func (s *Scanner) NeedsPin() bool { return strings.Contains(s.text, PinPrompt) }
+func (s *Scanner) NeedsPin() bool { return s.contains(PinPrompt) }
+
+func (s *Scanner) contains(needle string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.Contains(s.text, needle)
+}
 
 // PortalFailure returns doubletake's own screen-capture error, if it printed
 // one, and the empty string otherwise.
@@ -122,6 +135,8 @@ func (s *Scanner) NeedsPin() bool { return strings.Contains(s.text, PinPrompt) }
 //
 //	screen capture failed: screencast portal: timeout waiting for portal response
 func (s *Scanner) PortalFailure() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, line := range strings.Split(s.text, "\n") {
 		if strings.Contains(line, "screen capture failed") ||
 			(strings.Contains(line, "portal") && strings.Contains(line, "capture")) {
@@ -133,6 +148,8 @@ func (s *Scanner) PortalFailure() string {
 
 // Tail returns the last of the output, for diagnostics.
 func (s *Scanner) Tail(limit int) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	flat := strings.Join(strings.Fields(s.text), " ")
 	if len(flat) > limit {
 		return flat[len(flat)-limit:]

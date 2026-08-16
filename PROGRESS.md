@@ -14,7 +14,7 @@ cast to a real Apple TV.
 | `internal/discovery` | **done** | avahi-browse parsing, real captured fixtures |
 | `internal/session` | **done** | state machine, injected clock |
 | `internal/hypr` | **done** | virtual/mirrored outputs, cleanup, state-modelling fake |
-| `internal/backend/airplay` | **partial** | argv + output scanning done; process supervision and session lifecycle NOT started |
+| `internal/backend/airplay` | **done** | argv, output scanning, and the full session lifecycle |
 | `internal/daemon` | not started | flock, IPC, idle watchdog, discovery waits |
 | `internal/picker` | not started | omarchy-menu-select / walker |
 | `internal/config` | not started | TOML |
@@ -29,8 +29,7 @@ observed streaming the webcam, and it is the only part needing cgo.
 ## Build order
 
 1. ~~discovery~~ · ~~session~~ · ~~hypr~~ · ~~doubletake argv/scanning~~
-2. **airplay session lifecycle** — spawn, supervise, teardown; mirror creates a
-   mirrored output, extend an independent one; separate creds per mode
+2. ~~airplay session lifecycle~~
 3. **daemon** — flock BEFORE any cleanup sweep, then IPC, then discovery waits
 4. **config** — TOML, with the migration from `~/.config/omarchy-cast`
 5. **picker + cmd/castr** — CLI and menu
@@ -55,18 +54,24 @@ Ticked items have a test that fails if the rule is broken (mutation-checked).
 - [x] Use `monitors all` — mirrored outputs are absent from the plain listing
 - [x] `Failed` reachable from anywhere; leaving it clears the reason
 - [x] Active states keep the idle watchdog from exiting under a live cast
-- [ ] Never switch the panel's mode; virtual output first, panel switch only as
-      fallback (rule lives in the session lifecycle, step 2)
-- [ ] Mirror and extend use separate portal credentials
+- [x] Never switch the panel's mode; virtual output first, panel switch only as
+      fallback — and the mirrored output must really mirror the panel, not just
+      be named for it
+- [x] A fallback panel switch is restored on teardown, and only then
+- [x] Mirror and extend use separate portal credentials
 - [ ] One daemon only — flock taken before any cleanup sweep
 - [ ] Both `list` and `start` wait for discovery on a cold daemon; the wait keys
       on mDNS having answered, not on "anything known"
 - [ ] `start` waits longer than `list` (~12s vs ~3s), measured from daemon start
 - [ ] Daemon stays resident ~15 min so the discovery cache is not discarded
-- [ ] Ready timeout ≥60s and configurable (capture began 23s after ready)
+- [x] Ready timeout ≥60s by default (capture began 23s after ready) — still
+      needs wiring to config
 - [ ] Only notify failures nobody is waiting on; one banner per event
-- [ ] `stop` must not report success while an output remains
+- [x] `stop` must not report success while an output remains
+- [x] A crash before streaming never overwrites the startup outcome; a deliberate
+      stop is never reported as a crash; a crash mid-stream always is
 - [ ] Terminate the child's process GROUP, or capture pipelines outlive it
+      (the interface says so; `cmd/castrd` must actually do it)
 - [ ] Cross-subnet casting works — never advise switching networks
 - [ ] Migrate state from `~/.config/omarchy-cast` on first run
 
@@ -84,6 +89,18 @@ Ticked items have a test that fails if the rule is broken (mutation-checked).
 - **Hardware verification is a checklist, not a test.** Before any release:
   picture appears, capture traces to the portal's screen node (not a camera,
   via `pw-dump` link tracing), panel keeps its mode, teardown leaves nothing.
+
+## Notes for the next step
+
+`internal/backend/airplay` is pure logic: every external effect is a func field
+on `Backend` (`Hypr`, `Spawn`, `Creds`, `Emit`, `SwitchDisplay`,
+`RestoreDisplay`). `cmd/castrd` supplies the real ones. Two of them carry
+invariants the package cannot enforce itself:
+
+- `Spawn` must set `Setpgid` and `Terminate` must signal the process GROUP
+  (`syscall.Kill(-pid, ...)`), or doubletake's capture pipelines outlive it.
+- `Emit` is where the notification rules live: only failures nobody is waiting
+  on, one banner per event.
 
 ## Environment facts
 
