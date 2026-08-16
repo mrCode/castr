@@ -24,6 +24,10 @@ import (
 // DaemonBinary is the program that does the work.
 const DaemonBinary = "castrd"
 
+// version is set at build time with -X main.version. The default says so
+// plainly rather than claiming a release number nobody stamped.
+var version = "dev"
+
 func main() {
 	socket := daemon.DefaultSocketPath()
 
@@ -33,6 +37,10 @@ func main() {
 		Out:    os.Stdout,
 		Err:    os.Stderr,
 		Socket: socket,
+	}
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version") {
+		fmt.Println("castr", version)
+		return
 	}
 	os.Exit(app.Run(os.Args[1:]))
 }

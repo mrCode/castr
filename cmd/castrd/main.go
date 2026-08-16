@@ -38,11 +38,20 @@ import (
 	"github.com/mrCode/castr/internal/session"
 )
 
+// version is set at build time with -X main.version.
+var version = "dev"
+
 func main() {
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	idleTimeout := flag.Duration("idle-timeout", daemon.IdleTimeout,
 		"exit after this long with nothing casting")
 	verbose := flag.Bool("v", false, "log every state change")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("castrd", version)
+		return
+	}
 
 	if err := run(*idleTimeout, *verbose); err != nil {
 		log.Fatalf("castrd: %v", err)

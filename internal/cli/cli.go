@@ -40,6 +40,7 @@ const Usage = `castr — cast this screen to an AirPlay receiver
   castr add <address> [name] register a receiver mDNS cannot see
   castr forget <id>          drop a registered receiver
   castr quit                 stop the background daemon
+  castr version              print the version
 `
 
 // Run dispatches one command and returns the process exit code.
