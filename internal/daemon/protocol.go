@@ -13,6 +13,37 @@ const SocketFilename = "daemon.sock"
 // SocketPath returns the socket inside a state directory.
 func SocketPath(stateDir string) string { return filepath.Join(stateDir, SocketFilename) }
 
+// MaxSocketPath is the kernel's limit on a unix socket address. Exceeding it
+// fails with "bind: invalid argument", which says nothing about path length.
+const MaxSocketPath = 100
+
+// DefaultSocketPath is where the daemon listens and the client dials.
+//
+// XDG_RUNTIME_DIR first: it is the correct home for a socket -- per-user,
+// cleared at logout -- and it is SHORT. The state directory can sit deep
+// enough to blow the kernel's address limit, and the failure then reads as
+// "bind: invalid argument" with no mention of a path being too long.
+func DefaultSocketPath() string {
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		candidate := filepath.Join(dir, "castr", SocketFilename)
+		if len(candidate) <= MaxSocketPath {
+			return candidate
+		}
+	}
+	return SocketPath(StateDir())
+}
+
+// CheckSocketPath explains a path the kernel will refuse, before it is used.
+func CheckSocketPath(path string) error {
+	if len(path) > MaxSocketPath {
+		return fmt.Errorf(
+			"the socket path is %d characters, past the %d the kernel allows: %s\n"+
+				"set XDG_RUNTIME_DIR to something shorter",
+			len(path), MaxSocketPath, path)
+	}
+	return nil
+}
+
 // StateDir is where the lock, the socket, and the portal credentials live.
 func StateDir() string {
 	base := os.Getenv("XDG_STATE_HOME")

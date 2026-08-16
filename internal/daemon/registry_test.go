@@ -246,3 +246,21 @@ func TestDevicesAreOrderedStably(t *testing.T) {
 		}
 	}
 }
+
+func TestOnlyManualReceiversAreOfferedForPersisting(t *testing.T) {
+	// Saving discovered ones would freeze a snapshot of the network into a
+	// file, and they would come back as stale entries long after they were
+	// unplugged.
+	b := &fakeBrowser{found: []discovery.Device{dev("a", "Discovered")}}
+	r := NewRegistry(b.browse, nil)
+	if err := r.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	r.Add(dev("m", "Manual"))
+
+	got := r.ManualDevices()
+
+	if len(got) != 1 || got[0].ID != "m" {
+		t.Errorf("got %+v, want only the manual receiver", got)
+	}
+}

@@ -22,7 +22,8 @@ cast to a real Apple TV.
 | `internal/client` | **done** | socket client, daemon auto-spawn |
 | `internal/cli` | **done** | every command, and the menu flow |
 | `cmd/castr` | **done** | wires the real effects; 4.8 MB static binary |
-| `cmd/castrd` | not started | daemon entry point, real runners live here |
+| `internal/notify` | **done** | the notification policy |
+| `cmd/castrd` | **done** | daemon entry point; owns lock-order, process groups, notify |
 | `cmd/castr-tui` | not started | bubbletea; ship v1 without it if it slips |
 | packaging | not started | PKGBUILD, AUR submission as a NEW package |
 
@@ -39,7 +40,7 @@ observed streaming the webcam, and it is the only part needing cgo.
 3. ~~daemon~~
 4. ~~config~~
 5. ~~picker + cmd/castr~~
-6. **cmd/castrd** — the daemon binary; see the notes below, it owns three rules
+6. ~~cmd/castrd~~
 7. **Quickshell widget** — port `share/quickshell/`, change the plugin id
 8. **TUI** — last, optional for v1
 9. **packaging** — PKGBUILD, then AUR
@@ -81,8 +82,8 @@ Ticked items have a test that fails if the rule is broken (mutation-checked).
 - [x] The socket is 0600 and every request gets a reply, malformed ones included
 - [x] Ready timeout ≥60s by default (capture began 23s after ready) and
       configurable
-- [ ] Only notify failures nobody is waiting on; one banner per event
-      (the daemon calls `Notify`; the policy itself lives in `cmd/castrd`)
+- [x] Only notify failures nobody is waiting on; one banner per event — and
+      only failures are urgent, because urgent means sticky on mako
 - [x] The picker is probed, never hardcoded — Quarto removed walker, and a
       hardcoded launcher turns a system update into a broken keybind
 - [x] Omarchy's menu takes options as ARGUMENTS, walker takes them on stdin
@@ -96,8 +97,10 @@ Ticked items have a test that fails if the rule is broken (mutation-checked).
 - [x] `stop` must not report success while an output remains
 - [x] A crash before streaming never overwrites the startup outcome; a deliberate
       stop is never reported as a crash; a crash mid-stream always is
-- [ ] Terminate the child's process GROUP, or capture pipelines outlive it
-      (the interface says so; `cmd/castrd` must actually do it)
+- [x] Terminate the child's process GROUP, or capture pipelines outlive it —
+      verified against REAL processes in cmd/castrd, since no fake can show it
+- [x] A fallback panel switch is remembered on disk, so a daemon killed
+      mid-cast restores the panel on its next start
 - [ ] Cross-subnet casting works — never advise switching networks
 - [x] Migrate state from `~/.config/omarchy-cast` on first run — COPY, never
       move: omarchy-cast still works and must keep working
@@ -120,15 +123,22 @@ Ticked items have a test that fails if the rule is broken (mutation-checked).
   picture appears, capture traces to the portal's screen node (not a camera,
   via `pw-dump` link tracing), panel keeps its mode, teardown leaves nothing.
 
+## Verified end to end on this machine (2026-08-16)
+
+Both binaries built and run against the real system, in an isolated
+XDG_STATE_HOME:
+
+- discovery found five real receivers via avahi, including an AppleTV14,1
+- a second `castrd` was refused by the lock
+- add / list / forget / forget-again all behaved
+- `castr bar` answered with no daemon and started none
+- `quit` shut down cleanly and removed its socket
+
+**NOT yet verified: an actual cast.** doubletake 0.4.0-git is installed and a
+receiver is reachable, but starting one takes over the user's screen, so it
+needs their say-so. That is the remaining hardware checklist below.
+
 ## Notes for the next step
-
-`cmd/castrd` wires the real effects and owns three rules no package can enforce
-for itself:
-
-1. `daemon.Acquire` FIRST, then `hypr.CleanupStrays`, then `daemon.Serve`. The
-   order is the whole point of the lock.
-2. `Spawn` sets `Setpgid`; `Terminate` signals the process GROUP.
-3. `Notify` implements the notification policy.
 
 
 `internal/backend/airplay` is pure logic: every external effect is a func field

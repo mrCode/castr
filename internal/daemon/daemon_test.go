@@ -90,7 +90,7 @@ func newRig(t *testing.T, devices ...discovery.Device) *rig {
 	r.daemon = New(r.registry, map[string]Backend{discovery.ProtocolAirPlay: r.backend})
 	r.daemon.ListGrace = 20 * time.Millisecond
 	r.daemon.StartGrace = 50 * time.Millisecond
-	r.daemon.Notify = func(s session.State, _ discovery.Device, _ string) {
+	r.daemon.Notify = func(_ discovery.Device, s session.State, _ string) {
 		r.mu.Lock()
 		r.notified = append(r.notified, s)
 		r.mu.Unlock()

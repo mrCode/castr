@@ -320,3 +320,44 @@ func TestTheSocketIsRemovedOnShutdown(t *testing.T) {
 		t.Error("the socket file outlived the daemon")
 	}
 }
+
+func TestASocketPathTheKernelWillRefuseIsExplained(t *testing.T) {
+	// "bind: invalid argument" says nothing about a path being too long, and
+	// the limit is about 100 bytes -- reachable with a deep XDG_STATE_HOME.
+	r := newRig(t)
+	long := filepath.Join(t.TempDir(), strings.Repeat("d/", 60), "daemon.sock")
+
+	err := r.daemon.Serve(context.Background(), long)
+
+	if err == nil {
+		t.Fatal("an impossible socket path was accepted")
+	}
+	if !strings.Contains(err.Error(), "too") && !strings.Contains(err.Error(), "past the") {
+		t.Errorf("err = %q, want it to say the path is too long", err)
+	}
+}
+
+func TestTheDefaultSocketLivesInTheRuntimeDirectory(t *testing.T) {
+	// Per-user, cleared at logout, and short enough for the kernel.
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+
+	got := DefaultSocketPath()
+
+	if !strings.HasPrefix(got, "/run/user/1000/") {
+		t.Errorf("socket = %q, want it under XDG_RUNTIME_DIR", got)
+	}
+	if err := CheckSocketPath(got); err != nil {
+		t.Errorf("the default path is not usable: %v", err)
+	}
+}
+
+func TestAnAbsentRuntimeDirectoryFallsBackToTheStateDirectory(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	t.Setenv("XDG_STATE_HOME", "/tmp/castr-test-state")
+
+	got := DefaultSocketPath()
+
+	if !strings.HasPrefix(got, "/tmp/castr-test-state/") {
+		t.Errorf("socket = %q, want the state directory fallback", got)
+	}
+}

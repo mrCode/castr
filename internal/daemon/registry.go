@@ -98,6 +98,19 @@ func (r *Registry) Forget(id string) bool {
 	return ok
 }
 
+// ManualDevices returns only the hand-registered receivers, which are the ones
+// worth persisting: discovered ones come back from the next browse.
+func (r *Registry) ManualDevices() []discovery.Device {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]discovery.Device, 0, len(r.manual))
+	for _, d := range r.manual {
+		out = append(out, d)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 // Devices returns everything known, discovered and manual, sorted by name so
 // the menu does not reshuffle itself between invocations.
 func (r *Registry) Devices() []discovery.Device {

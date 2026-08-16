@@ -41,10 +41,14 @@ var ours = []string{OutputExtend, OutputMirror}
 
 // Monitor is the part of hyprctl's monitor JSON we use.
 type Monitor struct {
-	Name     string  `json:"name"`
-	Width    int     `json:"width"`
-	Height   int     `json:"height"`
-	Refresh  float64 `json:"refreshRate"`
+	Name    string  `json:"name"`
+	Width   int     `json:"width"`
+	Height  int     `json:"height"`
+	Refresh float64 `json:"refreshRate"`
+	// Position matters on restore: putting a mode back without it moves the
+	// panel to 0x0 and shuffles every other monitor on a multi-monitor desk.
+	X        int     `json:"x"`
+	Y        int     `json:"y"`
 	Scale    float64 `json:"scale"`
 	Focused  bool    `json:"focused"`
 	MirrorOf string  `json:"mirrorOf"`

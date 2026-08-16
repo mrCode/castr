@@ -25,7 +25,7 @@ import (
 const DaemonBinary = "castrd"
 
 func main() {
-	socket := daemon.SocketPath(daemon.StateDir())
+	socket := daemon.DefaultSocketPath()
 
 	app := &cli.App{
 		Client: client.New(socket, spawnDaemon),

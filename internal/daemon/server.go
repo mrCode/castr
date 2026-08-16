@@ -27,6 +27,11 @@ const clientTimeout = 3 * time.Minute
 // The caller must already hold the daemon lock: binding the socket is exactly
 // the step that lets a second daemon take over, so the lock has to come first.
 func (d *Daemon) Serve(ctx context.Context, socketPath string) error {
+	// Checked before anything else, so a path the kernel will refuse is
+	// reported as a path problem rather than as "bind: invalid argument".
+	if err := CheckSocketPath(socketPath); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
 		return fmt.Errorf("creating the state directory: %w", err)
 	}

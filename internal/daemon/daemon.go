@@ -42,7 +42,7 @@ type Backend interface {
 }
 
 // Notifier shows the user a desktop banner.
-type Notifier func(state session.State, device discovery.Device, reason string)
+type Notifier func(device discovery.Device, state session.State, reason string)
 
 // Daemon owns discovery, the session records, and the backends.
 type Daemon struct {
@@ -113,7 +113,7 @@ func (d *Daemon) OnState(device discovery.Device, state session.State, reason st
 	d.mu.Unlock()
 
 	if d.Notify != nil {
-		d.Notify(state, device, reason)
+		d.Notify(device, state, reason)
 	}
 }
 
