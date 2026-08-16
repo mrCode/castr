@@ -17,11 +17,14 @@ cast to a real Apple TV.
 | `internal/backend/airplay` | **done** | argv, output scanning, and the full session lifecycle |
 | `internal/daemon` | **done** | flock, registry, commands, idle watchdog, unix-socket IPC |
 | `internal/picker` | not started | omarchy-menu-select / walker |
-| `internal/config` | not started | TOML |
+| `internal/config` | **done** | TOML, manual-device store, migration from omarchy-cast |
 | `cmd/castr` | not started | CLI + menu |
 | `cmd/castrd` | not started | daemon entry point, real runners live here |
 | `cmd/castr-tui` | not started | bubbletea; ship v1 without it if it slips |
 | packaging | not started | PKGBUILD, AUR submission as a NEW package |
+
+Go module dependencies: `github.com/BurntSushi/toml` only (no transitive deps).
+Package dependencies are unchanged: avahi, plus doubletake as an optdepend.
 
 Scope for v1: **AirPlay only**. Chromecast is deferred — its capture path was
 observed streaming the webcam, and it is the only part needing cgo.
@@ -31,7 +34,7 @@ observed streaming the webcam, and it is the only part needing cgo.
 1. ~~discovery~~ · ~~session~~ · ~~hypr~~ · ~~doubletake argv/scanning~~
 2. ~~airplay session lifecycle~~
 3. ~~daemon~~
-4. **config** — TOML, with the migration from `~/.config/omarchy-cast`
+4. ~~config~~
 5. **picker + cmd/castr** — CLI and menu
 6. **Quickshell widget** — port `share/quickshell/`, change the plugin id
 7. **TUI** — last, optional for v1
@@ -72,8 +75,8 @@ Ticked items have a test that fails if the rule is broken (mutation-checked).
       stoppable
 - [x] Manual receivers survive every browse and outrank stale discovered records
 - [x] The socket is 0600 and every request gets a reply, malformed ones included
-- [x] Ready timeout ≥60s by default (capture began 23s after ready) — still
-      needs wiring to config
+- [x] Ready timeout ≥60s by default (capture began 23s after ready) and
+      configurable
 - [ ] Only notify failures nobody is waiting on; one banner per event
       (the daemon calls `Notify`; the policy itself lives in `cmd/castrd`)
 - [x] `stop` must not report success while an output remains
@@ -82,7 +85,11 @@ Ticked items have a test that fails if the rule is broken (mutation-checked).
 - [ ] Terminate the child's process GROUP, or capture pipelines outlive it
       (the interface says so; `cmd/castrd` must actually do it)
 - [ ] Cross-subnet casting works — never advise switching networks
-- [ ] Migrate state from `~/.config/omarchy-cast` on first run
+- [x] Migrate state from `~/.config/omarchy-cast` on first run — COPY, never
+      move: omarchy-cast still works and must keep working
+- [x] A config file that sets one key keeps the defaults for the rest
+- [x] Manual receivers persist across daemon restarts; a corrupt store is
+      ignored rather than fatal; saves are atomic
 
 ## Testing rules
 
