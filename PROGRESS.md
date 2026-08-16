@@ -15,7 +15,7 @@ cast to a real Apple TV.
 | `internal/session` | **done** | state machine, injected clock |
 | `internal/hypr` | **done** | virtual/mirrored outputs, cleanup, state-modelling fake |
 | `internal/backend/airplay` | **done** | argv, output scanning, and the full session lifecycle |
-| `internal/daemon` | not started | flock, IPC, idle watchdog, discovery waits |
+| `internal/daemon` | **done** | flock, registry, commands, idle watchdog, unix-socket IPC |
 | `internal/picker` | not started | omarchy-menu-select / walker |
 | `internal/config` | not started | TOML |
 | `cmd/castr` | not started | CLI + menu |
@@ -30,7 +30,7 @@ observed streaming the webcam, and it is the only part needing cgo.
 
 1. ~~discovery~~ · ~~session~~ · ~~hypr~~ · ~~doubletake argv/scanning~~
 2. ~~airplay session lifecycle~~
-3. **daemon** — flock BEFORE any cleanup sweep, then IPC, then discovery waits
+3. ~~daemon~~
 4. **config** — TOML, with the migration from `~/.config/omarchy-cast`
 5. **picker + cmd/castr** — CLI and menu
 6. **Quickshell widget** — port `share/quickshell/`, change the plugin id
@@ -59,14 +59,23 @@ Ticked items have a test that fails if the rule is broken (mutation-checked).
       be named for it
 - [x] A fallback panel switch is restored on teardown, and only then
 - [x] Mirror and extend use separate portal credentials
-- [ ] One daemon only — flock taken before any cleanup sweep
-- [ ] Both `list` and `start` wait for discovery on a cold daemon; the wait keys
-      on mDNS having answered, not on "anything known"
-- [ ] `start` waits longer than `list` (~12s vs ~3s), measured from daemon start
-- [ ] Daemon stays resident ~15 min so the discovery cache is not discarded
+- [x] One daemon only — flock, exclusive, released by process death so a crash
+      cannot lock out successors; `cmd/castrd` must call it BEFORE the sweep
+- [x] Both `list` and `start` wait for discovery on a cold daemon; the wait keys
+      on mDNS having answered, not on "anything known" — and a FAILED browse is
+      not an answer
+- [x] `start` waits longer than `list` (~12s vs ~3s), measured from daemon start
+- [x] Daemon stays resident ~15 min so the discovery cache is not discarded
+- [x] A displaced session record is restored only on a refusal, never on a
+      failed restart
+- [x] An unacknowledged (idle) session is neither reported as a cast nor
+      stoppable
+- [x] Manual receivers survive every browse and outrank stale discovered records
+- [x] The socket is 0600 and every request gets a reply, malformed ones included
 - [x] Ready timeout ≥60s by default (capture began 23s after ready) — still
       needs wiring to config
 - [ ] Only notify failures nobody is waiting on; one banner per event
+      (the daemon calls `Notify`; the policy itself lives in `cmd/castrd`)
 - [x] `stop` must not report success while an output remains
 - [x] A crash before streaming never overwrites the startup outcome; a deliberate
       stop is never reported as a crash; a crash mid-stream always is
@@ -91,6 +100,15 @@ Ticked items have a test that fails if the rule is broken (mutation-checked).
   via `pw-dump` link tracing), panel keeps its mode, teardown leaves nothing.
 
 ## Notes for the next step
+
+`cmd/castrd` wires the real effects and owns three rules no package can enforce
+for itself:
+
+1. `daemon.Acquire` FIRST, then `hypr.CleanupStrays`, then `daemon.Serve`. The
+   order is the whole point of the lock.
+2. `Spawn` sets `Setpgid`; `Terminate` signals the process GROUP.
+3. `Notify` implements the notification policy.
+
 
 `internal/backend/airplay` is pure logic: every external effect is a func field
 on `Backend` (`Hypr`, `Spawn`, `Creds`, `Emit`, `SwitchDisplay`,
