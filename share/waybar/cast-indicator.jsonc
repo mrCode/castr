@@ -1,0 +1,14 @@
+// For desktops still running waybar. On Omarchy "Quarto" and later, use the
+// Quickshell widget in share/quickshell/castr-indicator instead -- waybar is
+// no longer the bar, and a module added here would simply never be displayed.
+//
+// Add "custom/cast-indicator" to modules-right in ~/.config/waybar/config.jsonc,
+// then merge this block into the same file.
+"custom/cast-indicator": {
+  "exec": "castr bar",
+  "return-type": "json",
+  "interval": 2,
+  "on-click": "castr menu",
+  "on-click-right": "castr stop",
+  "tooltip": true
+}

@@ -1,0 +1,8 @@
+/* Append to ~/.config/waybar/style.css.
+   The icon stays visible in every state; colour carries the state. Waybar sets
+   spacing to 0 globally here, so the margin has to be declared per module. */
+#custom-cast-indicator { margin-right: 10px; }
+#custom-cast-indicator.idle { opacity: 0.5; }
+#custom-cast-indicator.connecting { color: @yellow; }
+#custom-cast-indicator.streaming { color: @green; }
+#custom-cast-indicator.failed { color: @red; }

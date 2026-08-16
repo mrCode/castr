@@ -25,7 +25,7 @@ cast to a real Apple TV.
 | `internal/notify` | **done** | the notification policy |
 | `cmd/castrd` | **done** | daemon entry point; owns lock-order, process groups, notify |
 | `cmd/castr-tui` | not started | bubbletea; ship v1 without it if it slips |
-| packaging | not started | PKGBUILD, AUR submission as a NEW package |
+| packaging | **written** | PKGBUILD + install notes; NOT yet submitted to the AUR |
 
 Go module dependencies: `github.com/BurntSushi/toml` only (no transitive deps).
 Package dependencies are unchanged: avahi, plus doubletake as an optdepend.
@@ -41,9 +41,10 @@ observed streaming the webcam, and it is the only part needing cgo.
 4. ~~config~~
 5. ~~picker + cmd/castr~~
 6. ~~cmd/castrd~~
-7. **Quickshell widget** — port `share/quickshell/`, change the plugin id
-8. **TUI** — last, optional for v1
-9. **packaging** — PKGBUILD, then AUR
+7. ~~Quickshell widget~~ — ported, plugin id changed to `castr.indicator`
+8. **HARDWARE VERIFICATION** — the only thing between here and a release
+9. **packaging** — PKGBUILD written; AUR submission after hardware passes
+10. **TUI** — optional, after v1
 
 ## Invariants — every one is a bug already shipped and fixed
 
@@ -134,9 +135,24 @@ XDG_STATE_HOME:
 - `castr bar` answered with no daemon and started none
 - `quit` shut down cleanly and removed its socket
 
-**NOT yet verified: an actual cast.** doubletake 0.4.0-git is installed and a
-receiver is reachable, but starting one takes over the user's screen, so it
-needs their say-so. That is the remaining hardware checklist below.
+**NOT yet verified: an actual cast.** doubletake is installed and receivers are
+reachable, but starting a cast takes over the user's screen, so it needs their
+say-so. Everything else is done; this is the last gate before a release.
+
+### The hardware checklist, in order
+
+1. `castr menu` -> pick a receiver -> Mirror. Picture appears on the TV.
+2. `hyprctl monitors` shows the PANEL still at 2560x1600@240. This is the
+   regression that cost 240Hz once already.
+3. `pw-dump` link trace confirms capture comes from the portal's screen node,
+   NOT a camera. Never trust the picture alone -- omarchy-cast looked right
+   while streaming the webcam.
+4. Stop. `hyprctl monitors all` shows no `castr*` output left behind.
+5. Repeat for Extend: a second desktop appears, windows can be moved to it.
+6. Kill `castrd` with SIGKILL mid-cast, then start it again: no stray outputs,
+   no leftover doubletake, panel mode intact.
+7. `pgrep -f gst` after a stop: nothing. Capture pipelines must not outlive
+   their parent.
 
 ## Notes for the next step
 
