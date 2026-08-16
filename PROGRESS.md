@@ -16,9 +16,12 @@ cast to a real Apple TV.
 | `internal/hypr` | **done** | virtual/mirrored outputs, cleanup, state-modelling fake |
 | `internal/backend/airplay` | **done** | argv, output scanning, and the full session lifecycle |
 | `internal/daemon` | **done** | flock, registry, commands, idle watchdog, unix-socket IPC |
-| `internal/picker` | not started | omarchy-menu-select / walker |
+| `internal/picker` | **done** | omarchy-menu-select / walker, both calling conventions |
 | `internal/config` | **done** | TOML, manual-device store, migration from omarchy-cast |
-| `cmd/castr` | not started | CLI + menu |
+| `internal/ui` | **done** | menu entries, id parsing, bar indicator payload |
+| `internal/client` | **done** | socket client, daemon auto-spawn |
+| `internal/cli` | **done** | every command, and the menu flow |
+| `cmd/castr` | **done** | wires the real effects; 4.8 MB static binary |
 | `cmd/castrd` | not started | daemon entry point, real runners live here |
 | `cmd/castr-tui` | not started | bubbletea; ship v1 without it if it slips |
 | packaging | not started | PKGBUILD, AUR submission as a NEW package |
@@ -35,10 +38,11 @@ observed streaming the webcam, and it is the only part needing cgo.
 2. ~~airplay session lifecycle~~
 3. ~~daemon~~
 4. ~~config~~
-5. **picker + cmd/castr** — CLI and menu
-6. **Quickshell widget** — port `share/quickshell/`, change the plugin id
-7. **TUI** — last, optional for v1
-8. **packaging** — PKGBUILD, then AUR
+5. ~~picker + cmd/castr~~
+6. **cmd/castrd** — the daemon binary; see the notes below, it owns three rules
+7. **Quickshell widget** — port `share/quickshell/`, change the plugin id
+8. **TUI** — last, optional for v1
+9. **packaging** — PKGBUILD, then AUR
 
 ## Invariants — every one is a bug already shipped and fixed
 
@@ -79,6 +83,16 @@ Ticked items have a test that fails if the rule is broken (mutation-checked).
       configurable
 - [ ] Only notify failures nobody is waiting on; one banner per event
       (the daemon calls `Notify`; the policy itself lives in `cmd/castrd`)
+- [x] The picker is probed, never hardcoded — Quarto removed walker, and a
+      hardcoded launcher turns a system update into a broken keybind
+- [x] Omarchy's menu takes options as ARGUMENTS, walker takes them on stdin
+- [x] Cancelling a menu is not a failure
+- [x] The bar indicator stays visible in every state, and `castr bar` never
+      spawns a daemon and never exits non-zero
+- [x] A manual receiver's id is keyed on its ADDRESS alone, so re-adding
+      updates rather than duplicating
+- [x] Stopping is reachable from the menu, listed first
+- [x] An "ok" with no device list is an error, never an empty network
 - [x] `stop` must not report success while an output remains
 - [x] A crash before streaming never overwrites the startup outcome; a deliberate
       stop is never reported as a crash; a crash mid-stream always is
