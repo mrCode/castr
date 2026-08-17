@@ -15,6 +15,7 @@ package hypr
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -51,6 +52,7 @@ type Monitor struct {
 	Y        int     `json:"y"`
 	Scale    float64 `json:"scale"`
 	Focused  bool    `json:"focused"`
+	ID       int     `json:"id"`
 	MirrorOf string  `json:"mirrorOf"`
 	Disabled bool    `json:"disabled"`
 }
@@ -106,8 +108,18 @@ func CreateOutput(run Runner, want, mirrorOf string) (string, error) {
 		want = OutputExtend
 	}
 
-	if _, err := run("hyprctl", "output", "create", "headless", want); err != nil {
-		return "", fmt.Errorf("creating output: %w", err)
+	// An output of this name may already exist -- a leftover from a daemon that
+	// died mid-cast. 0.56.2 refuses to create over it ("Name already taken"),
+	// so reuse it instead of failing the cast for a name collision with
+	// ourselves.
+	existing, err := hasOutput(run, want)
+	if err != nil {
+		return "", err
+	}
+	if !existing {
+		if err := mutate(run, "output", "create", "headless", want); err != nil {
+			return "", fmt.Errorf("creating output: %w", err)
+		}
 	}
 
 	name, err := resolveName(run, want)
@@ -115,18 +127,72 @@ func CreateOutput(run Runner, want, mirrorOf string) (string, error) {
 		remove(run, want)
 		return "", err
 	}
+	_ = existing
 
-	config := fmt.Sprintf("%s,%s,auto,1", name, geometry)
-	if mirrorOf != "" {
-		config += ",mirror," + mirrorOf
-	}
-	if _, err := run("hyprctl", "keyword", "monitor", config); err != nil {
+	if err := Apply(run, MonitorSpec{Output: name, Mode: geometry,
+		Position: "auto", Scale: 1, Mirror: mirrorOf}); err != nil {
 		// Created but not configured: unusable as a desktop, so do not leave it.
 		remove(run, name)
 		return "", fmt.Errorf("configuring output %s: %w", name, err)
 	}
 
+	// Asked for, and then CHECKED. hyprctl answered "ok" to a mirror that was
+	// never applied for a whole Hyprland release, and the only visible symptom
+	// was an Apple TV showing an empty desktop.
+	if mirrorOf != "" {
+		if err := verifyMirror(run, name, mirrorOf); err != nil {
+			remove(run, name)
+			return "", err
+		}
+	}
+
 	return name, nil
+}
+
+// verifyMirror confirms the output really is mirroring the source.
+//
+// hyprctl reports mirrorOf as the source monitor's ID, not its name, so the
+// name has to be resolved to an id first.
+func verifyMirror(run Runner, name, mirrorOf string) error {
+	monitors, err := Monitors(run)
+	if err != nil {
+		return err
+	}
+
+	sourceID := ""
+	for _, m := range monitors {
+		if m.Name == mirrorOf {
+			sourceID = strconv.Itoa(m.ID)
+		}
+	}
+
+	for _, m := range monitors {
+		if m.Name != name {
+			continue
+		}
+		if m.MirrorOf == mirrorOf || (sourceID != "" && m.MirrorOf == sourceID) {
+			return nil
+		}
+		return fmt.Errorf(
+			"output %s was created but is not mirroring %s (mirrorOf=%q); "+
+				"the receiver would show an empty desktop",
+			name, mirrorOf, m.MirrorOf)
+	}
+	return fmt.Errorf("output %s vanished after being configured", name)
+}
+
+// hasOutput reports whether an output of this name is already known.
+func hasOutput(run Runner, name string) (bool, error) {
+	monitors, err := Monitors(run)
+	if err != nil {
+		return false, err
+	}
+	for _, m := range monitors {
+		if m.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // resolveName confirms the output exists and reports the name it really has.
@@ -160,14 +226,24 @@ func resolveName(run Runner, want string) (string, error) {
 }
 
 // RemoveOutput deletes a virtual output. Reports whether it actually went.
+//
+// UN-MIRRORS FIRST, and that order is the whole point. On Hyprland 0.56.2 a
+// mirrored headless output cannot be removed: `output remove` answers "output
+// not found" for an output `monitors` is listing, exits 0, and the output stays
+// on the desk forever stealing windows. Clearing the mirror makes it removable.
 func RemoveOutput(run Runner, name string) error {
-	if _, err := run("hyprctl", "output", "remove", name); err != nil {
+	// Best effort: an output that was never mirroring is already removable, and
+	// a failure here must not stop the removal itself.
+	_ = Apply(run, MonitorSpec{Output: name, Mode: geometry,
+		Position: "auto", Scale: 1, Mirror: MirrorNone})
+
+	if err := mutate(run, "output", "remove", name); err != nil {
 		return fmt.Errorf("removing output %s: %w", name, err)
 	}
 	return nil
 }
 
-func remove(run Runner, name string) { _, _ = run("hyprctl", "output", "remove", name) }
+func remove(run Runner, name string) { _ = RemoveOutput(run, name) }
 
 // CleanupStrays removes our own leftover outputs after a crash, skipping any
 // name a live session still owns.

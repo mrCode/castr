@@ -32,14 +32,14 @@ type SavedMode struct {
 	Scale   float64 `json:"scale"`
 }
 
-// Keyword renders the mode as a hyprctl monitor argument.
-func (m SavedMode) Keyword() string {
-	scale := m.Scale
-	if scale <= 0 {
-		scale = 1
+// Spec renders the saved mode as a monitor configuration.
+func (m SavedMode) Spec() MonitorSpec {
+	return MonitorSpec{
+		Output:   m.Name,
+		Mode:     fmt.Sprintf("%dx%d@%.5f", m.Width, m.Height, m.Refresh),
+		Position: fmt.Sprintf("%dx%d", m.X, m.Y),
+		Scale:    m.Scale,
 	}
-	return fmt.Sprintf("%s,%dx%d@%.5f,%dx%d,%g",
-		m.Name, m.Width, m.Height, m.Refresh, m.X, m.Y, scale)
 }
 
 // SwitchPanel forces the focused monitor to the streaming geometry and saves
@@ -64,9 +64,9 @@ func SwitchPanel(run Runner, stateDir string) error {
 		return err
 	}
 
-	arg := fmt.Sprintf("%s,%s,%dx%d,%g", monitor.Name, StreamGeometry,
-		monitor.X, monitor.Y, scaleOrOne(monitor.Scale))
-	if _, err := run("hyprctl", "keyword", "monitor", arg); err != nil {
+	if err := Apply(run, MonitorSpec{Output: monitor.Name, Mode: StreamGeometry,
+		Position: fmt.Sprintf("%dx%d", monitor.X, monitor.Y),
+		Scale:    scaleOrOne(monitor.Scale)}); err != nil {
 		clearMode(stateDir)
 		return fmt.Errorf("switching %s to %s: %w", monitor.Name, StreamGeometry, err)
 	}
@@ -84,7 +84,7 @@ func RestorePanel(run Runner, stateDir string) error {
 		return nil // nothing was switched; restoring would fight the user
 	}
 
-	if _, err := run("hyprctl", "keyword", "monitor", saved.Keyword()); err != nil {
+	if err := Apply(run, saved.Spec()); err != nil {
 		// The file stays, so the next daemon start can try again rather than
 		// leaving the panel wrong forever.
 		return fmt.Errorf("restoring %s: %w", saved.Name, err)

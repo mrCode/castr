@@ -3,6 +3,7 @@ package airplay
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -84,13 +85,26 @@ func (p *fakeProc) wasTerminated() bool {
 	return p.terminated
 }
 
-// fakeHypr models compositor state; see internal/hypr for why state, not calls.
+// fakeHypr models Hyprland 0.56.2's actual rules, which are not the obvious
+// ones: mutating commands answer "ok" or an error message and ALWAYS exit 0,
+// monitors are configured through `eval hl.monitor{...}` rather than `keyword`,
+// and a MIRRORING output cannot be removed until its mirror is cleared.
+//
+// The last rule is why this fake is worth its length: castr shipped a mirror
+// output that mirrored nothing, and no call-recording stub would have noticed.
 type fakeHypr struct {
 	mu         sync.Mutex
-	monitors   []string
-	mirrorOf   map[string]string // output -> what it mirrors, "" for independent
+	monitors   []fakeMonitor
 	failNew    bool
 	failRemove bool
+}
+
+type fakeMonitor struct {
+	name     string
+	width    int
+	height   int
+	focused  bool
+	mirrorOf string
 }
 
 func (f *fakeHypr) run(name string, args ...string) (string, error) {
@@ -102,73 +116,106 @@ func (f *fakeHypr) run(name string, args ...string) (string, error) {
 	case strings.HasPrefix(joined, "-j monitors"):
 		var parts []string
 		for i, m := range f.monitors {
-			parts = append(parts, `{"name":"`+m+`","focused":`+boolStr(i == 0)+`}`)
+			parts = append(parts, fmt.Sprintf(
+				`{"id":%d,"name":%q,"width":%d,"height":%d,"focused":%v,"mirrorOf":%q}`,
+				i, m.name, m.width, m.height, m.focused, m.mirrorOf))
 		}
 		return "[" + strings.Join(parts, ",") + "]", nil
 
-	case strings.HasPrefix(joined, "keyword monitor"):
-		// "<name>,<geometry>,auto,1[,mirror,<source>]"
-		fields := strings.Split(args[len(args)-1], ",")
-		src := ""
-		for i, f := range fields {
-			if f == "mirror" && i+1 < len(fields) {
-				src = fields[i+1]
-			}
-		}
-		if f.mirrorOf == nil {
-			f.mirrorOf = map[string]string{}
-		}
-		f.mirrorOf[fields[0]] = src
-		return "ok", nil
-
 	case strings.HasPrefix(joined, "output create headless"):
 		if f.failNew {
-			return "", errors.New("no")
+			return "could not create output", nil // exit 0, like the real thing
 		}
-		f.monitors = append(f.monitors, args[len(args)-1])
+		want := args[len(args)-1]
+		if f.find(want) >= 0 {
+			return "Name already taken", nil
+		}
+		f.monitors = append(f.monitors, fakeMonitor{name: want,
+			width: 1920, height: 1080, mirrorOf: "none"})
 		return "ok", nil
 
 	case strings.HasPrefix(joined, "output remove"):
 		if f.failRemove {
-			// The output survives, which is exactly the point.
-			return "", errors.New("no such output")
+			return "output not found", nil
 		}
 		target := args[len(args)-1]
-		kept := f.monitors[:0]
-		for _, m := range f.monitors {
-			if m != target {
-				kept = append(kept, m)
-			}
+		i := f.find(target)
+		if i < 0 {
+			return "output not found", nil
 		}
-		f.monitors = kept
+		if m := f.monitors[i]; m.mirrorOf != "" && m.mirrorOf != "none" {
+			// Still mirroring: 0.56.2 refuses, and says so while exiting 0.
+			return "output not found", nil
+		}
+		f.monitors = append(f.monitors[:i], f.monitors[i+1:]...)
 		return "ok", nil
+
+	case strings.HasPrefix(joined, "eval "):
+		return f.eval(args[len(args)-1]), nil
+
+	case strings.HasPrefix(joined, "keyword "):
+		return "keyword can't work with non-legacy parsers. Use eval.", nil
 	}
 	return "ok", nil
 }
 
-func boolStr(b bool) string {
-	if b {
-		return "true"
+func (f *fakeHypr) eval(code string) string {
+	output, ok := luaField(code, "output")
+	if !ok {
+		return "ok"
 	}
-	return "false"
+	i := f.find(output)
+	if i < 0 {
+		return "ok"
+	}
+	if mirror, ok := luaField(code, "mirror"); ok {
+		if mirror == hypr.MirrorNone {
+			f.monitors[i].mirrorOf = "none"
+		} else {
+			f.monitors[i].mirrorOf = mirror
+		}
+	}
+	return "ok"
+}
+
+func luaField(code, name string) (string, bool) {
+	marker := name + ` = "`
+	i := strings.Index(code, marker)
+	if i < 0 {
+		return "", false
+	}
+	rest := code[i+len(marker):]
+	j := strings.Index(rest, `"`)
+	if j < 0 {
+		return "", false
+	}
+	return rest[:j], true
+}
+
+func (f *fakeHypr) find(name string) int {
+	for i, m := range f.monitors {
+		if m.name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 // mirrors reports what the named output mirrors, "" if it is independent.
 func (f *fakeHypr) mirrors(name string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.mirrorOf[name]
+	i := f.find(name)
+	if i < 0 || f.monitors[i].mirrorOf == "none" {
+		return ""
+	}
+	return f.monitors[i].mirrorOf
 }
 
 func (f *fakeHypr) has(name string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, m := range f.monitors {
-		if m == name {
-			return true
-		}
-	}
-	return false
+	return f.find(name) >= 0
 }
 
 type harness struct {
@@ -188,7 +235,8 @@ type harness struct {
 
 func newHarness(t *testing.T, chunks ...string) *harness {
 	t.Helper()
-	h := &harness{hypr: &fakeHypr{monitors: []string{"eDP-2"}}}
+	h := &harness{hypr: &fakeHypr{monitors: []fakeMonitor{
+		{name: "eDP-2", width: 2560, height: 1600, focused: true, mirrorOf: "none"}}}}
 
 	h.backend = &Backend{
 		Config:       config(),
