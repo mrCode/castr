@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/mrCode/castr/internal/client"
+	"github.com/mrCode/castr/internal/config"
 	"github.com/mrCode/castr/internal/daemon"
 	"github.com/mrCode/castr/internal/picker"
 	"github.com/mrCode/castr/internal/session"
@@ -40,6 +41,7 @@ const Usage = `castr — cast this screen to an AirPlay receiver
   castr add <address> [name] register a receiver mDNS cannot see
   castr forget <id>          drop a registered receiver
   castr quit                 stop the background daemon
+  castr reset-share [mode]   forget which output to share, so you get asked again
   castr version              print the version
 `
 
@@ -68,6 +70,8 @@ func (a *App) Run(args []string) int {
 		return a.add(args[1:])
 	case "forget":
 		return a.forget(args[1:])
+	case "reset-share":
+		return a.resetShare(args[1:])
 	case "quit":
 		return a.run(a.Client.Quit)
 	case "help", "-h", "--help":
@@ -211,6 +215,41 @@ func (a *App) bar() int {
 		return a.fail(err.Error())
 	}
 	fmt.Fprintln(a.Out, string(out))
+	return 0
+}
+
+// resetShare makes the screen-share prompt appear again.
+//
+// Casts are stopped first: doubletake rewrites this file when it exits, so
+// clearing it under a live cast is undone moments later.
+func (a *App) resetShare(args []string) int {
+	modes := session.Modes
+	if len(args) > 0 {
+		if !session.ValidMode(args[0]) {
+			return a.fail(fmt.Sprintf("unknown mode: %s; expected %s or %s",
+				args[0], session.ModeMirror, session.ModeExtend))
+		}
+		modes = []string{args[0]}
+	}
+
+	if sessions, err := a.Client.Sessions(); err == nil && len(sessions) > 0 {
+		for _, s := range sessions {
+			if err := a.Client.Stop(s.DeviceID); err != nil {
+				return a.fail(fmt.Sprintf("stopping %s first: %v", s.Name, err))
+			}
+		}
+	}
+
+	cleared, err := config.ClearRestoreTokens(daemon.StateDir(), modes)
+	if err != nil {
+		return a.fail(err.Error())
+	}
+	if len(cleared) == 0 {
+		fmt.Fprintln(a.Out, "Nothing to forget; you will be asked what to share on the next cast.")
+		return 0
+	}
+	fmt.Fprintf(a.Out, "Forgot %d screen-share choice(s). The next cast will ask again — "+
+		"pick the castr output, not your own screen.\n", len(cleared))
 	return 0
 }
 

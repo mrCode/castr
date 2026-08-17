@@ -11,8 +11,6 @@ import (
 	"github.com/mrCode/castr/internal/discovery"
 )
 
-var _ = sort.Strings
-
 // DevicesFilename holds the receivers the user registered by address.
 //
 // mDNS is not always usable. An access point can filter multicast per device,
@@ -193,6 +191,43 @@ func MergePairing(srcPath, dstPath string) ([]string, error) {
 		return nil, nil
 	}
 	return added, writeCreds(dstPath, dst)
+}
+
+// ClearRestoreTokens drops the screen-share grants while keeping every
+// pairing, and reports which receivers were affected.
+//
+// The portal remembers what you picked the first time and never asks again.
+// Pick the panel instead of castr's output -- an easy mistake, since the panel
+// is the obvious-looking choice in that dialog -- and every later cast captures
+// the wrong thing at the wrong resolution, silently, forever. This is the way
+// back, and it deliberately does NOT touch the pairing keys: re-picking an
+// output should not mean walking to the television to retype a code.
+func ClearRestoreTokens(stateDir string, modes []string) ([]string, error) {
+	var cleared []string
+	for _, mode := range modes {
+		path := CredsPath(stateDir, mode)
+		creds, err := readCreds(path)
+		if err != nil || len(creds) == 0 {
+			continue
+		}
+		changed := false
+		for receiver, entry := range creds {
+			if _, ok := entry["restore_token"]; !ok {
+				continue
+			}
+			delete(entry, "restore_token")
+			creds[receiver] = entry
+			cleared = append(cleared, mode+"/"+receiver)
+			changed = true
+		}
+		if changed {
+			if err := writeCreds(path, creds); err != nil {
+				return cleared, err
+			}
+		}
+	}
+	sort.Strings(cleared)
+	return cleared, nil
 }
 
 // SyncPairing makes every mode's file know every receiver castr has paired

@@ -420,3 +420,57 @@ func TestMigrationCarriesPairingsButNotTheOldApplicationsToken(t *testing.T) {
 		t.Error("the old application's portal token was carried over")
 	}
 }
+
+func TestForgettingAShareChoiceKeepsThePairing(t *testing.T) {
+	// Re-picking which output to share must not mean walking to the television
+	// and retyping a code. Those are different things stored in one file.
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), pairedTV)
+
+	cleared, err := ClearRestoreTokens(dir, []string{"mirror", "extend"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cleared) != 1 {
+		t.Errorf("cleared = %v, want the one receiver that had a grant", cleared)
+	}
+	entry := readCredsMap(t, CredsPath(dir, "mirror"))["AA:BB:CC:DD:EE:FF"]
+	if _, ok := entry["restore_token"]; ok {
+		t.Error("the share choice survived; the prompt would never appear again")
+	}
+	if entry["ed25519_seed"] != "seed-1" {
+		t.Errorf("seed = %v, want the pairing untouched", entry["ed25519_seed"])
+	}
+}
+
+func TestForgettingOneModeLeavesTheOtherAlone(t *testing.T) {
+	// Mirror and extend capture different outputs. Getting mirror wrong is no
+	// reason to make the user re-pick extend as well.
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), pairedTV)
+	putCreds(t, CredsPath(dir, "extend"),
+		`{"AA:BB:CC:DD:EE:FF":{"pairing_id":"id-1","restore_token":"token-for-extend"}}`)
+
+	if _, err := ClearRestoreTokens(dir, []string{"mirror"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := readCredsMap(t, CredsPath(dir, "mirror"))["AA:BB:CC:DD:EE:FF"]["restore_token"]; ok {
+		t.Error("mirror's grant survived")
+	}
+	if readCredsMap(t, CredsPath(dir, "extend"))["AA:BB:CC:DD:EE:FF"]["restore_token"] != "token-for-extend" {
+		t.Error("extend's grant was cleared too")
+	}
+}
+
+func TestForgettingNothingIsNotAnError(t *testing.T) {
+	cleared, err := ClearRestoreTokens(t.TempDir(), []string{"mirror", "extend"})
+
+	if err != nil {
+		t.Fatalf("err = %v, want a quiet no-op", err)
+	}
+	if len(cleared) != 0 {
+		t.Errorf("cleared = %v from an empty state directory", cleared)
+	}
+}
