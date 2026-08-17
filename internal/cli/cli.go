@@ -31,10 +31,10 @@ type App struct {
 const Usage = `castr — cast this screen to an AirPlay receiver
 
   castr menu                 pick a receiver and a mode (the keybind uses this)
-  castr list                 list the receivers found
+  castr list [--json]        list the receivers found
   castr start <id> [mode]    cast to a receiver; mode is mirror (default) or extend
   castr stop [id]            stop casting; with no id, stop everything
-  castr status               show what is casting
+  castr status [--json]      show what is casting
   castr bar                  one line of JSON for the bar indicator
   castr pin <id> <code>      send a pairing code
   castr add <address> [name] register a receiver mDNS cannot see
@@ -53,13 +53,13 @@ func (a *App) Run(args []string) int {
 	case "menu":
 		return a.menu()
 	case "list":
-		return a.list()
+		return a.list(args[1:])
 	case "start":
 		return a.start(args[1:])
 	case "stop":
 		return a.stop(args[1:])
 	case "status":
-		return a.status()
+		return a.status(args[1:])
 	case "bar", "waybar":
 		return a.bar()
 	case "pin":
@@ -90,10 +90,31 @@ func (a *App) run(f func() error) int {
 	return 0
 }
 
-func (a *App) list() int {
+// jsonRequested reports whether --json was asked for. The bar panel reads
+// these commands rather than scraping the human columns, which would break the
+// UI the moment a column width changed.
+func jsonRequested(args []string) bool {
+	for _, a := range args {
+		if a == "--json" || a == "-json" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) list(args []string) int {
 	devices, err := a.Client.Devices()
 	if err != nil {
+		if jsonRequested(args) {
+			// The panel needs a parseable answer even for a failure, or it
+			// cannot tell "no receivers" from "the daemon is not answering".
+			a.emitJSON(map[string]any{"devices": []any{}, "error": err.Error()})
+			return 1
+		}
 		return a.fail(err.Error())
+	}
+	if jsonRequested(args) {
+		return a.emitJSON(map[string]any{"devices": devices})
 	}
 	if len(devices) == 0 {
 		// Said out loud rather than printed as an empty list, because an empty
@@ -152,10 +173,17 @@ func (a *App) stop(args []string) int {
 	return code
 }
 
-func (a *App) status() int {
+func (a *App) status(args []string) int {
 	sessions, err := a.Client.Sessions()
 	if err != nil {
+		if jsonRequested(args) {
+			a.emitJSON(map[string]any{"sessions": []any{}, "error": err.Error()})
+			return 1
+		}
 		return a.fail(err.Error())
+	}
+	if jsonRequested(args) {
+		return a.emitJSON(map[string]any{"sessions": sessions})
 	}
 	if len(sessions) == 0 {
 		fmt.Fprintln(a.Out, "Not casting.")
@@ -183,6 +211,16 @@ func (a *App) bar() int {
 		return a.fail(err.Error())
 	}
 	fmt.Fprintln(a.Out, string(out))
+	return 0
+}
+
+// emitJSON writes one line of JSON, which is what every consumer here parses.
+func (a *App) emitJSON(payload any) int {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return a.fail(err.Error())
+	}
+	fmt.Fprintln(a.Out, string(raw))
 	return 0
 }
 

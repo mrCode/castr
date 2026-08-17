@@ -414,3 +414,84 @@ func TestHelpGoesToStdoutAndSucceeds(t *testing.T) {
 		t.Errorf("stdout = %q", h.out)
 	}
 }
+
+func TestListJSONIsOneParseableLine(t *testing.T) {
+	// The bar panel parses this. Scraping the human columns instead would
+	// break the UI the moment a column width changed.
+	h := newHarness(t)
+	h.daemon.devices = []daemon.DeviceJSON{tv()}
+
+	if code := h.app.Run([]string{"list", "--json"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.errOut)
+	}
+
+	lines := strings.Split(strings.TrimRight(h.out.String(), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("printed %d lines, want 1", len(lines))
+	}
+	var data struct {
+		Devices []daemon.DeviceJSON `json:"devices"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &data); err != nil {
+		t.Fatalf("not JSON: %v (%q)", err, lines[0])
+	}
+	if len(data.Devices) != 1 || data.Devices[0].ID != tv().ID {
+		t.Errorf("devices = %+v", data.Devices)
+	}
+}
+
+func TestAFailedListStillAnswersInJSON(t *testing.T) {
+	// The panel must be able to tell "no receivers" from "the daemon is not
+	// answering". A bare non-zero exit with no output looks like the former.
+	h := newHarness(t)
+	h.daemon.failWith[daemon.CmdList] = "no castr daemon is running"
+
+	code := h.app.Run([]string{"list", "--json"})
+
+	if code == 0 {
+		t.Error("a failed list exited 0")
+	}
+	var data struct {
+		Devices []daemon.DeviceJSON `json:"devices"`
+		Error   string              `json:"error"`
+	}
+	if err := json.Unmarshal(h.out.Bytes(), &data); err != nil {
+		t.Fatalf("not JSON: %v (%q)", err, h.out.String())
+	}
+	if data.Error == "" {
+		t.Error("the failure carried no reason the panel could show")
+	}
+}
+
+func TestStatusJSONCarriesModeAndState(t *testing.T) {
+	h := newHarness(t)
+	h.daemon.sessions = []daemon.SessionJSON{
+		{DeviceID: "a", Name: "TV", Mode: "extend", State: "streaming"}}
+
+	if code := h.app.Run([]string{"status", "--json"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+
+	var data struct {
+		Sessions []daemon.SessionJSON `json:"sessions"`
+	}
+	if err := json.Unmarshal(h.out.Bytes(), &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Sessions) != 1 || data.Sessions[0].Mode != "extend" ||
+		data.Sessions[0].State != "streaming" {
+		t.Errorf("sessions = %+v", data.Sessions)
+	}
+}
+
+func TestHumanOutputIsUnchangedWithoutTheFlag(t *testing.T) {
+	// The JSON flag must not quietly become the default; people read this.
+	h := newHarness(t)
+	h.daemon.devices = []daemon.DeviceJSON{tv()}
+
+	h.app.Run([]string{"list"})
+
+	if strings.HasPrefix(strings.TrimSpace(h.out.String()), "{") {
+		t.Errorf("plain list emitted JSON: %q", h.out)
+	}
+}
