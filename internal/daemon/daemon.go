@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mrCode/castr/internal/backend/airplay"
 	"github.com/mrCode/castr/internal/discovery"
 	"github.com/mrCode/castr/internal/session"
 )
@@ -198,7 +197,7 @@ func (d *Daemon) Start(ctx context.Context, deviceID, mode string) error {
 		// failure is wrong for the opposite reason: a failed restart tears the
 		// old cast down on its way in, so putting that record back claims a
 		// cast that is gone.
-		if errors.Is(err, airplay.ErrRefused) && previous != nil {
+		if errors.Is(err, session.ErrRefused) && previous != nil {
 			d.sessions[device.ID] = previous
 		}
 	}
@@ -227,7 +226,22 @@ func (d *Daemon) Stop(ctx context.Context, deviceID string) error {
 	if !ok {
 		return fmt.Errorf("no backend for protocol: %s", s.Device.Protocol)
 	}
-	return backend.Stop(ctx, s.Device)
+
+	err := backend.Stop(ctx, s.Device)
+	if err != nil && errors.Is(err, session.ErrNoSession) {
+		// The BACKEND is the authority on whether a cast exists. If it has no
+		// record, ours is stale and keeping it strands the device forever:
+		// status lists a cast that cannot be stopped, the bar shows it
+		// connecting, and every later stop repeats the same refusal. Observed
+		// on real hardware after a stop whose teardown failed.
+		d.mu.Lock()
+		if current, ok := d.sessions[deviceID]; ok && current == s {
+			delete(d.sessions, deviceID)
+		}
+		d.mu.Unlock()
+		return nil
+	}
+	return err
 }
 
 // SubmitPin forwards a pairing code.

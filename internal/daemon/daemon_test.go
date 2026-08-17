@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mrCode/castr/internal/backend/airplay"
 	"github.com/mrCode/castr/internal/discovery"
 	"github.com/mrCode/castr/internal/session"
 )
@@ -151,11 +150,11 @@ func TestARefusedStartPutsTheDisplacedSessionBack(t *testing.T) {
 	}
 
 	r.backend.mu.Lock()
-	r.backend.startErr = airplay.ErrRefused
+	r.backend.startErr = session.ErrRefused
 	r.backend.states = nil
 	r.backend.mu.Unlock()
 
-	if err := r.daemon.Start(ctx, "a", session.ModeExtend); !errors.Is(err, airplay.ErrRefused) {
+	if err := r.daemon.Start(ctx, "a", session.ModeExtend); !errors.Is(err, session.ErrRefused) {
 		t.Fatalf("err = %v, want ErrRefused", err)
 	}
 
@@ -400,5 +399,48 @@ func TestShutdownIsSafeFromSeveralGoroutinesAtOnce(t *testing.T) {
 	case <-r.daemon.Stopping():
 	default:
 		t.Error("Shutdown did not stop the daemon")
+	}
+}
+
+func TestAStaleSessionTheBackendHasForgottenIsCleared(t *testing.T) {
+	// Reached on real hardware. A stop whose teardown failed left the backend
+	// without the session and the daemon with it: `status` listed a cast that
+	// could not be stopped, the bar showed it connecting, and every later stop
+	// repeated the same refusal. Nothing could ever clear it.
+	r := newRig(t, dev("a", "TV"))
+	if err := r.daemon.Start(context.Background(), "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	r.backend.mu.Lock()
+	r.backend.stopErr = session.ErrNoSession // the backend has forgotten it
+	r.backend.mu.Unlock()
+
+	if err := r.daemon.Stop(context.Background(), "a"); err != nil {
+		t.Fatalf("stopping a session the backend forgot: %v", err)
+	}
+
+	if len(r.daemon.Sessions()) != 0 {
+		t.Error("the stale session survived; nothing would ever clear it")
+	}
+}
+
+func TestAStopThatGenuinelyFailedKeepsTheSession(t *testing.T) {
+	// The opposite error. A teardown that failed with an output still on the
+	// desk must NOT look like a clean stop -- dropping the record there hides
+	// a live cast and a monitor the user cannot get rid of.
+	r := newRig(t, dev("a", "TV"))
+	if err := r.daemon.Start(context.Background(), "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	r.backend.mu.Lock()
+	r.backend.stopErr = errors.New("removing output castr-mirror: output not found")
+	r.backend.mu.Unlock()
+
+	if err := r.daemon.Stop(context.Background(), "a"); err == nil {
+		t.Fatal("a failed teardown reported success")
+	}
+
+	if len(r.daemon.Sessions()) != 1 {
+		t.Error("the session was dropped despite the teardown failing")
 	}
 }

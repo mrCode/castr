@@ -17,6 +17,11 @@ import (
 // termGrace is how long a child gets to exit after SIGTERM before SIGKILL.
 const termGrace = 3 * time.Second
 
+// drainGrace is how long the scanner gets to read what a dead child left in
+// the pipe before the reader is forced closed. Its last lines are the ones
+// that say why the cast failed.
+const drainGrace = 500 * time.Millisecond
+
 // child is a real doubletake process.
 type child struct {
 	cmd    *exec.Cmd
@@ -83,27 +88,51 @@ func spawner(cfg config.Config, stateDir string) airplay.Spawner {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.Env = childEnv(cfg, stateDir)
 
-		output, err := cmd.StdoutPipe()
+		// Plain os.Pipe rather than cmd.StdoutPipe: os/exec closes the pipes it
+		// owns as part of cmd.Wait, and "it is incorrect to call Wait before
+		// all reads have completed". Waiting in a goroutine while the scanner
+		// reads is exactly that race, and what it truncates is the child's
+		// LAST output -- the error text castr shows the user to explain why a
+		// cast failed.
+		outR, outW, err := os.Pipe()
 		if err != nil {
 			return nil, fmt.Errorf("capturing output: %w", err)
 		}
-		// Merged: doubletake prints the ready marker on one and its errors on
-		// the other, and the scanner needs both in one stream.
-		cmd.Stderr = cmd.Stdout
+		// Merged: doubletake prints the ready marker on one stream and its
+		// capture errors on the other, and the scanner needs both.
+		cmd.Stdout = outW
+		cmd.Stderr = outW
 
-		input, err := cmd.StdinPipe()
+		inR, inW, err := os.Pipe()
 		if err != nil {
+			outR.Close()
+			outW.Close()
 			return nil, fmt.Errorf("opening stdin: %w", err)
 		}
+		cmd.Stdin = inR
 
 		if err := cmd.Start(); err != nil {
+			outR.Close()
+			outW.Close()
+			inR.Close()
+			inW.Close()
 			return nil, err
 		}
+		// The child holds the only remaining writer, so the reader sees EOF
+		// when the whole process group is gone -- not when we stop waiting.
+		outW.Close()
+		inR.Close()
 
-		c := &child{cmd: cmd, output: output, input: input, done: make(chan struct{})}
+		c := &child{cmd: cmd, output: outR, input: inW, done: make(chan struct{})}
 		go func() {
 			_ = cmd.Wait()
 			close(c.done)
+
+			// A capture pipeline that survived its parent would hold the write
+			// end open and the reader would block forever, so the crash would
+			// never be announced. Give the scanner a moment to drain, then
+			// force it to unblock.
+			time.AfterFunc(drainGrace, func() { outR.Close() })
 		}()
 		return c, nil
 	}

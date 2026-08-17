@@ -103,6 +103,12 @@ func run(idleTimeout time.Duration, verbose bool) error {
 		log.Printf("config: %v", err)
 	}
 
+	// Every mode learns every receiver castr has paired with, so switching
+	// between mirror and extend never asks for a code that was already typed.
+	if err := config.SyncPairing(stateDir, session.Modes); err != nil {
+		log.Printf("syncing pairings: %v", err)
+	}
+
 	registry := daemon.NewRegistry(browse, time.Now)
 	for _, device := range config.LoadDevices(config.DevicesPath(stateDir)) {
 		registry.Add(device)
@@ -227,7 +233,7 @@ func newAirPlayBackend(cfg config.Config, stateDir string) *airplay.Backend {
 		},
 		Hypr:         hyprctl,
 		ReadyTimeout: time.Duration(cfg.AirPlay.ReadyTimeout * float64(time.Second)),
-		Creds:        func(string) (string, error) { return credsPath(stateDir) },
+		Creds:        func(mode string) (string, error) { return credsPath(stateDir, mode) },
 		Spawn:        spawner(cfg, stateDir),
 
 		// The fallback, never the normal path -- see hypr.SwitchPanel.
@@ -236,16 +242,17 @@ func newAirPlayBackend(cfg config.Config, stateDir string) *airplay.Backend {
 	}
 }
 
-// credsPath is where doubletake keeps its AirPlay pairing credentials.
+// credsPath is doubletake's credentials file for one mode.
 //
-// ONE file for every mode and every receiver. doubletake keys the contents by
-// receiver itself, so a per-mode split gains nothing and costs the user a
-// second pairing -- typing the code off the television again the first time
-// they extend to a receiver they already mirror to.
-func credsPath(stateDir string) (string, error) {
+// Per mode, because each entry carries a screen-share portal restore_token
+// alongside the receiver's pairing keys, and the token describes an OUTPUT.
+// Mirror and extend capture different outputs, so one shared file makes extend
+// replay mirror's grant and cast the wrong screen, silently. config.SyncPairing
+// shares the pairing keys across modes so nobody pairs twice.
+func credsPath(stateDir, mode string) (string, error) {
 	dir := filepath.Join(stateDir, "creds")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("creating %s: %w", dir, err)
 	}
-	return filepath.Join(dir, "pairing.json"), nil
+	return config.CredsPath(stateDir, mode), nil
 }

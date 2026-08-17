@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/mrCode/castr/internal/discovery"
 )
+
+var _ = sort.Strings
 
 // DevicesFilename holds the receivers the user registered by address.
 //
@@ -120,18 +123,119 @@ func SaveDevices(path string, devices []discovery.Device) error {
 	return nil
 }
 
-// CredsPath is doubletake's pairing-credentials file: one for every mode and
-// every receiver, because doubletake keys its contents by receiver.
-func CredsPath(stateDir string) string {
-	return filepath.Join(stateDir, "creds", "pairing.json")
+// CredsPath is doubletake's credentials file for one mode.
+//
+// PER MODE, and that is deliberate. The file holds two different things under
+// each receiver: the AirPlay pairing keys, which belong to the receiver, and a
+// screen-share portal restore_token, which belongs to the OUTPUT being
+// captured. Mirror and extend capture different outputs, so a shared file
+// replays mirror's portal grant when extending -- casting the wrong screen,
+// silently. Pairing twice is annoying; casting the wrong thing is worse, and
+// SyncPairing removes the annoyance without reintroducing the fault.
+func CredsPath(stateDir, mode string) string {
+	return filepath.Join(stateDir, "creds", mode+".json")
 }
 
-// LegacyCredsFilenames are omarchy-cast's per-mode credential files. It split
-// them by mode on the mistaken belief that they held a portal token; both hold
-// the same receiver keys, so either one migrates cleanly.
-var LegacyCredsFilenames = []string{
-	"doubletake-mirror-credentials.json",
-	"doubletake-extend-credentials.json",
+// LegacyCredsFilenames are omarchy-cast's per-mode credential files.
+var LegacyCredsFilenames = map[string]string{
+	"mirror": "doubletake-mirror-credentials.json",
+	"extend": "doubletake-extend-credentials.json",
+}
+
+// pairingFields are the per-receiver keys. Everything else in an entry --
+// restore_token above all -- describes a capture, not a receiver, and must
+// never be copied between modes or carried over from another application.
+var pairingFields = []string{"pairing_id", "ed25519_public", "ed25519_seed"}
+
+// MergePairing copies pairing keys from src into dst without touching either
+// file's portal tokens, and returns the receivers it added.
+func MergePairing(srcPath, dstPath string) ([]string, error) {
+	src, err := readCreds(srcPath)
+	if err != nil || len(src) == 0 {
+		return nil, err
+	}
+	dst, err := readCreds(dstPath)
+	if err != nil {
+		return nil, err
+	}
+	if dst == nil {
+		dst = map[string]map[string]any{}
+	}
+
+	var added []string
+	for receiver, entry := range src {
+		target, ok := dst[receiver]
+		if !ok {
+			target = map[string]any{}
+		}
+		changed := false
+		for _, field := range pairingFields {
+			value, present := entry[field]
+			if !present {
+				continue
+			}
+			if existing, ok := target[field]; !ok || existing != value {
+				target[field] = value
+				changed = true
+			}
+		}
+		if !changed && ok {
+			continue
+		}
+		// Note what is NOT here: restore_token is never copied, because only
+		// pairingFields are. It describes a captured OUTPUT, and this mode
+		// captures a different one. Deleting the destination's own token would
+		// be wrong for the same reason -- it is that mode's, and valid.
+		dst[receiver] = target
+		added = append(added, receiver)
+	}
+	if len(added) == 0 {
+		return nil, nil
+	}
+	return added, writeCreds(dstPath, dst)
+}
+
+// SyncPairing makes every mode's file know every receiver castr has paired
+// with, so a receiver is only ever paired once however many modes are used.
+func SyncPairing(stateDir string, modes []string) error {
+	for _, from := range modes {
+		for _, to := range modes {
+			if from == to {
+				continue
+			}
+			if _, err := MergePairing(CredsPath(stateDir, from), CredsPath(stateDir, to)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func readCreds(path string) (map[string]map[string]any, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	var out map[string]map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		// Hand-editable and replaceable: doubletake will simply pair again.
+		return nil, nil
+	}
+	return out, nil
+}
+
+func writeCreds(path string, creds map[string]map[string]any) error {
+	raw, err := json.MarshalIndent(creds, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding credentials: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(raw, '\n'), 0o600)
 }
 
 // LegacyName is the package castr replaces. Its files are read once, on first
@@ -163,19 +267,23 @@ func Migrate(configDir, stateDir, legacyConfigDir, legacyStateDir string) ([]str
 		copied = append(copied, newDevices)
 	}
 
-	// AirPlay pairing credentials. Without these an upgrading user has to walk
-	// to the television and retype a code for every receiver they had already
-	// paired with. omarchy-cast kept one file per mode holding the same keys;
-	// either will do, so take the first that exists.
-	newCreds := CredsPath(stateDir)
-	for _, name := range LegacyCredsFilenames {
-		done, err := copyIfAbsent(filepath.Join(legacyStateDir, name), newCreds, 0o600)
+	// AirPlay pairing keys, and ONLY those. Without them an upgrading user
+	// walks to the television and retypes a code for every receiver they had
+	// already paired with.
+	//
+	// The portal restore_token in the same entries is deliberately dropped: it
+	// grants capture of an output named for the OLD application, which no
+	// longer exists. Replaying it is how a cast ends up showing the wrong
+	// screen with nothing in any log to say so.
+	for mode, legacyName := range LegacyCredsFilenames {
+		added, err := MergePairing(filepath.Join(legacyStateDir, legacyName),
+			CredsPath(stateDir, mode))
 		if err != nil {
 			return copied, err
 		}
-		if done {
-			copied = append(copied, newCreds)
-			break
+		if len(added) > 0 {
+			copied = append(copied, fmt.Sprintf("%s (%d receiver pairings)",
+				CredsPath(stateDir, mode), len(added)))
 		}
 	}
 

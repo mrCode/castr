@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -313,5 +314,109 @@ func TestAFailedRenameDoesNotStrandATemporaryFile(t *testing.T) {
 		if strings.HasPrefix(e.Name(), ".manual-devices-") {
 			t.Errorf("a failed save stranded %s", e.Name())
 		}
+	}
+}
+
+// --- credentials: pairing keys are shared, portal tokens never are ---
+
+func putCreds(t *testing.T, path string, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readCredsMap(t *testing.T, path string) map[string]map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out map[string]map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decoding %s: %v", path, err)
+	}
+	return out
+}
+
+const pairedTV = `{"AA:BB:CC:DD:EE:FF":{"pairing_id":"id-1","ed25519_public":"pub-1",` +
+	`"ed25519_seed":"seed-1","restore_token":"token-for-mirror"}}`
+
+func TestPairingKeysAreSharedBetweenModes(t *testing.T) {
+	// Otherwise the user walks to the television and retypes a code the first
+	// time they extend to a receiver they already mirror to.
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), pairedTV)
+
+	if err := SyncPairing(dir, []string{"mirror", "extend"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readCredsMap(t, CredsPath(dir, "extend"))
+	entry, ok := got["AA:BB:CC:DD:EE:FF"]
+	if !ok {
+		t.Fatal("extend never learned the receiver")
+	}
+	if entry["ed25519_seed"] != "seed-1" {
+		t.Errorf("seed = %v, want the pairing key carried across", entry["ed25519_seed"])
+	}
+}
+
+func TestAPortalTokenIsNeverSharedBetweenModes(t *testing.T) {
+	// The token grants capture of a specific OUTPUT. Mirror and extend capture
+	// different outputs, so replaying mirror's grant while extending casts the
+	// wrong screen -- and nothing anywhere reports it.
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), pairedTV)
+
+	if err := SyncPairing(dir, []string{"mirror", "extend"}); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := readCredsMap(t, CredsPath(dir, "extend"))["AA:BB:CC:DD:EE:FF"]
+	if _, leaked := entry["restore_token"]; leaked {
+		t.Error("mirror's portal token leaked into extend; extend would capture mirror's output")
+	}
+}
+
+func TestSyncingDoesNotDisturbAModesOwnToken(t *testing.T) {
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), pairedTV)
+	putCreds(t, CredsPath(dir, "extend"),
+		`{"AA:BB:CC:DD:EE:FF":{"pairing_id":"id-1","ed25519_public":"pub-1",`+
+			`"ed25519_seed":"seed-1","restore_token":"token-for-extend"}}`)
+
+	if err := SyncPairing(dir, []string{"mirror", "extend"}); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := readCredsMap(t, CredsPath(dir, "extend"))["AA:BB:CC:DD:EE:FF"]
+	if entry["restore_token"] != "token-for-extend" {
+		t.Errorf("extend's own token = %v, want it untouched", entry["restore_token"])
+	}
+}
+
+func TestMigrationCarriesPairingsButNotTheOldApplicationsToken(t *testing.T) {
+	// omarchy-cast's token grants capture of an output named for omarchy-cast,
+	// which castr never creates. Replaying it captured the wrong screen.
+	d := newDirs(t)
+	putCreds(t, filepath.Join(d.legacyState, LegacyCredsFilenames["mirror"]), pairedTV)
+
+	if _, err := Migrate(d.config, d.state, d.legacyConfig, d.legacyState); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := readCredsMap(t, CredsPath(d.state, "mirror"))["AA:BB:CC:DD:EE:FF"]
+	if entry == nil {
+		t.Fatal("the pairing was not carried over")
+	}
+	if entry["ed25519_seed"] != "seed-1" {
+		t.Errorf("seed = %v, want the pairing carried over", entry["ed25519_seed"])
+	}
+	if _, leaked := entry["restore_token"]; leaked {
+		t.Error("the old application's portal token was carried over")
 	}
 }

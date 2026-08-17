@@ -35,12 +35,9 @@ type CredsFor func(mode string) (string, error)
 // Emit reports a state change to the daemon.
 type Emit func(device discovery.Device, state session.State, reason string)
 
-// ErrRefused means the backend declined WITHOUT touching the device, so
-// whatever it was already doing, it still is. The daemon needs the distinction:
-// it displaces its session record before calling us, and must put it back only
-// for this case. Restoring it after a failed restart claimed a cast that was
-// gone, and left a green indicator on the bar for nothing.
-var ErrRefused = errors.New("refused")
+// ErrRefused is session.ErrRefused. The daemon matches on it to decide whether
+// to put back the session record it displaced before calling us.
+var ErrRefused = session.ErrRefused
 
 // Backend supervises one doubletake child per session.
 type Backend struct {
@@ -372,7 +369,9 @@ func (b *Backend) announceCrash(cs *castSession) {
 		fmt.Sprintf("%s %s stopped unexpectedly (%s)", verb, cs.device.Name, cs.scan.Tail(120)))
 }
 
-var errNoSession = errors.New("no active session")
+// errNoSession is session.ErrNoSession: the daemon needs the same value to
+// tell "I never had this" from "stopping it failed".
+var errNoSession = session.ErrNoSession
 
 // Stop ends a cast and undoes exactly what it set up.
 func (b *Backend) Stop(ctx context.Context, device discovery.Device) error {
@@ -396,6 +395,16 @@ func (b *Backend) Stop(ctx context.Context, device discovery.Device) error {
 	if err := b.undo(cs); err != nil {
 		// Reporting success while a virtual output remains is the failure
 		// shape this project keeps producing; say so instead.
+		//
+		// The session goes BACK, and stopping is cleared. Leaving it removed
+		// but flagged as stopping silenced every later report about it: the
+		// daemon listed a cast the backend had forgotten, nothing could stop
+		// it, and no crash would ever be announced. That dead end was reached
+		// on real hardware.
+		b.mu.Lock()
+		cs.stopping = false
+		b.sessions[device.ID] = cs
+		b.mu.Unlock()
 		return err
 	}
 	b.emit(device, session.Idle, "")
@@ -407,9 +416,14 @@ func (b *Backend) undo(cs *castSession) error {
 	var firstErr error
 	if cs.virtual != "" {
 		if err := hypr.RemoveOutput(b.Hypr, cs.virtual); err != nil {
+			// KEPT, not forgotten. Clearing it on failure meant the retry had
+			// nothing to remove and reported success while a 1080p monitor sat
+			// on the desk -- exactly the "stop must not lie" rule, defeated
+			// one line below where it is enforced.
 			firstErr = err
+		} else {
+			cs.virtual = ""
 		}
-		cs.virtual = ""
 	}
 	if cs.switchedDisplay && b.RestoreDisplay != nil {
 		if err := b.RestoreDisplay(); err != nil && firstErr == nil {

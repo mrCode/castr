@@ -788,3 +788,30 @@ func TestTheFailureAfterAPinPromptSuggestsWhereToLook(t *testing.T) {
 		t.Errorf("reason = %q, want it to name the pairing code", reasons[0])
 	}
 }
+
+func TestAFailedStopLeavesTheSessionStoppableAgain(t *testing.T) {
+	// Removing the record but flagging it as stopping silenced everything
+	// afterwards: the daemon listed a cast the backend had forgotten, nothing
+	// could stop it, and no crash would ever be announced. A real dead end,
+	// reached on real hardware.
+	h := newHarness(t, readyOutput)
+	ctx := context.Background()
+	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	h.hypr.failRemove = true
+
+	if err := h.backend.Stop(ctx, device("a", "TV")); err == nil {
+		t.Fatal("a failed teardown reported success")
+	}
+
+	// The output can be removed now; the retry must work rather than answer
+	// "no active session".
+	h.hypr.failRemove = false
+	if err := h.backend.Stop(ctx, device("a", "TV")); err != nil {
+		t.Errorf("the retry failed: %v", err)
+	}
+	if h.hypr.has(hypr.OutputMirror) {
+		t.Error("the output is still there after a successful retry")
+	}
+}

@@ -5,6 +5,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -142,3 +143,19 @@ func (s *Session) permits(to State) bool {
 	}
 	return false
 }
+
+// Errors a backend reports that the daemon must react to differently. They
+// live here, rather than in a backend, so the daemon can tell them apart
+// without importing any particular backend.
+var (
+	// ErrRefused means the backend declined WITHOUT touching the device, so
+	// whatever it was already doing, it still is. The daemon restores the
+	// session record it displaced only for this case: doing so after a failed
+	// restart would claim a cast that is gone.
+	ErrRefused = errors.New("refused")
+
+	// ErrNoSession means the backend has no record of this device at all --
+	// which is different from "I tried to stop it and failed". Only the first
+	// justifies the daemon dropping its own record.
+	ErrNoSession = errors.New("no active session")
+)
