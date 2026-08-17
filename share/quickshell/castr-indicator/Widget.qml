@@ -1,8 +1,13 @@
 // Cast control in the Omarchy bar.
 //
-// Clicking the icon opens a panel built from the shell's own components, so it
-// looks and behaves like the network and audio panels rather than the dmenu
-// popup this project used before Omarchy moved to Quickshell.
+// Built from the shell's own components so it reads like the network and audio
+// panels: a hero row, filled row cards, pill choices, and section headers.
+//
+// The first draft of this panel put a mirror icon and an extend icon on every
+// row. With eighteen laptops on an office network that is thirty-six identical
+// grey glyphs and a list running off the bottom of the screen. The mode is now
+// picked ONCE, as a pill, and a receiver row is a single click -- the same
+// shape as choosing a DNS provider and then a network next door.
 //
 // Everything it knows comes from three castr commands:
 //
@@ -11,8 +16,8 @@
 //   castr list --json    receivers, read only while the panel is open
 //   castr status --json  live casts, read only while the panel is open
 //
-// The panel parses JSON rather than scraping the human output, which would
-// break the moment a column width changed.
+// It parses JSON rather than scraping the human output, which would break the
+// moment a column width changed.
 
 import QtQuick
 import Quickshell
@@ -37,15 +42,25 @@ Panel {
   property var sessions: []
   property bool loading: false
   property string listError: ""
-  property string actionDeviceId: ""     // the row with a request in flight
-  property string actionMode: ""
+  property string mode: "mirror"         // the pill, applied to whatever is clicked
+  property string actionDeviceId: ""
+
+  readonly property color fg: bar ? bar.foreground : Color.foreground
+  readonly property color rowFill: Style.normalFillFor(fg)
+  readonly property color rowHover: Style.hoverFillFor(fg, Color.accent)
+  readonly property color rowLive: Style.selectedFillFor(fg, Color.accent)
+
+  readonly property int rowHeight: Style.space(40)
+  readonly property int rowGap: Style.spacing.sm
+  // Four rows and a peek at the fifth. The peek is the scroll affordance --
+  // deliberate, unlike the arbitrary slice the panel edge made of the last row
+  // when the cap was a round number of pixels.
+  readonly property int visibleRows: 4
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  function refreshStatus() {
-    if (!statusProc.running) statusProc.running = true
-  }
+  function refreshStatus() { if (!statusProc.running) statusProc.running = true }
 
   function refreshPanel() {
     if (!root.opened) return
@@ -54,22 +69,54 @@ Panel {
     if (!sessionsProc.running) sessionsProc.running = true
   }
 
-  // A receiver's live session, or null. Keyed on device id, never on name:
-  // two Apple TVs can share a name and only the id is unique.
+  // Keyed on device id, never on name: two Apple TVs can share a name and only
+  // the id is unique.
   function sessionFor(deviceId) {
     for (var i = 0; i < root.sessions.length; i++)
       if (root.sessions[i].device_id === deviceId) return root.sessions[i]
     return null
   }
 
-  function startCast(deviceId, mode) {
+  // A television is what you cast to; a colleague's laptop answering AirPlay is
+  // noise. Sorting them up is the difference between a list you scan and a list
+  // you search.
+  function isTelevision(device) {
+    var model = String(device.model || "")
+    return model.indexOf("AppleTV") === 0 || model.indexOf("TV") >= 0
+  }
+
+  function orderedDevices() {
+    var live = [], tvs = [], rest = []
+    for (var i = 0; i < root.devices.length; i++) {
+      var d = root.devices[i]
+      if (root.sessionFor(d.id)) live.push(d)
+      else if (isTelevision(d)) tvs.push(d)
+      else rest.push(d)
+    }
+    function byName(a, b) {
+      return String(a.name || "").toLowerCase() < String(b.name || "").toLowerCase() ? -1 : 1
+    }
+    return tvs.sort(byName).concat(rest.sort(byName))
+  }
+
+  function subtitleFor(device) {
+    if (root.actionDeviceId === device.id)
+      return root.mode === "extend" ? "Extending…" : "Mirroring…"
+    if (device.model) return device.model
+    // A receiver added by hand has no name of its own, so castr uses the
+    // address for both. Printing it twice tells the reader nothing; saying
+    // where it came from does.
+    if (device.name === device.address) return "Added by hand"
+    return device.address
+  }
+
+  function startCast(deviceId) {
     root.actionDeviceId = deviceId
-    root.actionMode = mode
-    startProc.command = ["castr", "start", deviceId, mode]
+    startProc.command = ["castr", "start", deviceId, root.mode]
     startProc.running = true
-    // Closed straight away: a cast can take most of a minute to come up, and
-    // the answer belongs on the bar and in a notification, not in a panel the
-    // user is holding open waiting for something to happen.
+    // Closed straight away: a cast takes most of a minute to come up, and the
+    // answer belongs on the bar and in a notification, not in a panel held open
+    // waiting for something to happen.
     root.close()
   }
 
@@ -140,7 +187,7 @@ Panel {
 
   Process {
     id: startProc
-    onExited: { root.actionDeviceId = ""; root.actionMode = ""; root.refreshStatus() }
+    onExited: { root.actionDeviceId = ""; root.refreshStatus() }
   }
 
   Process {
@@ -149,8 +196,6 @@ Panel {
   }
 
   Timer {
-    // Two seconds matches the waybar module. `castr bar` is a socket probe,
-    // not a scan, so this is cheap.
     interval: 2000
     running: true
     repeat: true
@@ -182,8 +227,6 @@ Panel {
 
     onPressed: function(b) {
       if (b === Qt.RightButton) {
-        // Right-click still stops immediately -- muscle memory from the old
-        // widget, and quicker than opening the panel to do it.
         if (root.casting || root.busy) root.stopCast("")
       } else {
         root.toggle()
@@ -200,7 +243,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(400))
+    contentWidth: panel.fittedContentWidth(Style.space(330))
     contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
     PanelKeyCatcher {
@@ -214,9 +257,9 @@ Panel {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        spacing: Style.space(12)
+        spacing: Style.spacing.lg
 
-        // ---------- hero: what is happening right now ----------
+        // ---------- hero ----------
         Item {
           width: parent.width
           implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight)
@@ -224,12 +267,9 @@ Panel {
           Text {
             id: heroIcon
             text: root.casting ? "󰄠" : "󰄡"
-            // The theme's palette, not invented colours: a theme sets
-            // foreground/accent/urgent/muted, and anything else ignores it.
-            color: root.failed ? Color.urgent
-                 : root.casting ? Color.accent
-                 : root.busy ? Qt.darker(Color.accent, 1.25)
-                 : Qt.darker(root.bar.foreground, 1.5)
+            // The theme's own palette: a theme sets foreground/accent/urgent,
+            // and inventing colours would ignore whatever the user chose.
+            color: root.failed ? Color.urgent : root.casting ? Color.accent : root.fg
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.display
             anchors.left: parent.left
@@ -240,14 +280,15 @@ Panel {
           Column {
             id: heroLabels
             anchors.left: heroIcon.right
-            anchors.leftMargin: Style.space(14)
-            anchors.right: parent.right
+            anchors.leftMargin: Style.spacing.lg
+            anchors.right: refreshButton.left
+            anchors.rightMargin: Style.spacing.md
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(2)
+            spacing: Style.spacing.xxs
 
             Text {
               text: "Cast"
-              color: root.bar.foreground
+              color: root.fg
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.title
               font.bold: true
@@ -256,54 +297,61 @@ Panel {
             }
 
             Text {
-              // The first line of the tooltip is the human sentence; the rest
-              // is the click hint, which is noise inside the panel itself.
+              // The first line only: the rest of the tooltip is the click hint,
+              // which is noise inside the panel it is describing.
               text: String(root.tooltip).split("\n")[0]
-              color: Qt.darker(root.bar.foreground, 1.4)
+              color: root.failed ? Color.urgent : Qt.darker(root.fg, 1.4)
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
+              elide: Text.ElideRight
               width: parent.width
             }
           }
+
+          PanelActionButton {
+            id: refreshButton
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: "󰑐"
+            tooltipText: "Look for receivers again"
+            foreground: root.fg
+            fontFamily: root.bar.fontFamily
+            onClicked: root.refreshPanel()
+          }
         }
 
-        // ---------- live casts, each with a stop ----------
+        // ---------- what is casting now ----------
         Repeater {
           model: root.sessions
-          delegate: Item {
+          delegate: BorderSurface {
             required property var modelData
             width: column.width
-            implicitHeight: Style.space(34)
-
-            Rectangle {
-              anchors.fill: parent
-              radius: Style.space(6)
-              color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g,
-                             root.bar.foreground.b, 0.06)
-            }
+            height: Style.space(38)
+            color: root.rowLive
+            radius: Style.cornerRadius
+            borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
             Text {
               anchors.left: parent.left
-              anchors.leftMargin: Style.space(10)
-              anchors.right: stopButton.left
-              anchors.rightMargin: Style.space(8)
+              anchors.leftMargin: Style.spacing.lg
               anchors.verticalCenter: parent.verticalCenter
-              text: modelData.name + "  ·  " + modelData.mode
-              color: root.bar.foreground
+              anchors.right: liveStop.left
+              anchors.rightMargin: Style.spacing.md
+              text: modelData.name
+              color: root.fg
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.body
               elide: Text.ElideRight
             }
 
             PanelActionButton {
-              id: stopButton
+              id: liveStop
               anchors.right: parent.right
-              anchors.rightMargin: Style.space(6)
+              anchors.rightMargin: Style.spacing.md
               anchors.verticalCenter: parent.verticalCenter
               iconText: "󰓛"
               tooltipText: "Stop casting to " + modelData.name
-              foreground: root.bar.foreground
+              foreground: root.fg
               hoverColor: Color.urgent
               fontFamily: root.bar.fontFamily
               onClicked: root.stopCast(modelData.device_id)
@@ -313,17 +361,49 @@ Panel {
 
         PanelSeparator {
           width: parent.width
-          foreground: root.bar.foreground
+          foreground: root.fg
           visible: root.sessions.length > 0
         }
+
+        // ---------- mode, chosen once ----------
+        PanelSectionHeader {
+          width: parent.width
+          text: "MODE"
+          foreground: root.fg
+          fontFamily: root.bar.fontFamily
+        }
+
+        ButtonGroup {
+          width: parent.width
+          options: [
+            { value: "mirror", label: "Mirror" },
+            { value: "extend", label: "Extend" }
+          ]
+          value: root.mode
+          foreground: root.fg
+          accent: Color.accent
+          fontFamily: root.bar.fontFamily
+          onChanged: function(value) { root.mode = value }
+        }
+
+        Text {
+          width: parent.width
+          text: root.mode === "extend"
+            ? "A second desktop on the receiver. Pick the castr output if asked what to share."
+            : "Shows this screen on the receiver."
+          color: Qt.darker(root.fg, 1.5)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
+
+        PanelSeparator { width: parent.width; foreground: root.fg }
 
         // ---------- receivers ----------
         PanelSectionHeader {
           width: parent.width
-          text: root.devices.length > 0 ? "RECEIVERS"
-              : root.loading ? "LOOKING FOR RECEIVERS"
-              : "NO RECEIVERS FOUND"
-          foreground: root.bar.foreground
+          text: root.loading && root.devices.length === 0 ? "LOOKING FOR RECEIVERS" : "RECEIVERS"
+          foreground: root.fg
           fontFamily: root.bar.fontFamily
         }
 
@@ -340,104 +420,97 @@ Panel {
         Text {
           width: parent.width
           visible: root.listError === "" && !root.loading && root.devices.length === 0
-          text: "Nothing is advertising AirPlay on this network. A receiver that "
-              + "does not answer mDNS can still be added with: castr add <address>"
-          color: Qt.darker(root.bar.foreground, 1.4)
+          text: "Nothing is advertising AirPlay here. A receiver that does not "
+              + "answer mDNS can still be added: castr add <address>"
+          color: Qt.darker(root.fg, 1.5)
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
           wrapMode: Text.WordWrap
         }
 
-        Repeater {
-          model: root.devices
-          delegate: Item {
-            id: row
-            required property var modelData
-            readonly property var liveSession: root.sessionFor(modelData.id)
-            readonly property bool live: !!liveSession
-            readonly property bool pending: root.actionDeviceId === modelData.id
-            width: column.width
-            implicitHeight: live ? 0 : Style.space(38)
-            visible: !live   // a live receiver is already shown above
+        // Capped and scrollable. An office network answers with every laptop in
+        // the building; without a ceiling the panel runs off the bottom of the
+        // screen and the receiver you actually want is somewhere past the edge.
+        Flickable {
+          width: parent.width
+          height: Math.min(receiverColumn.implicitHeight,
+                           root.visibleRows * (root.rowHeight + root.rowGap)
+                             + root.rowHeight / 2)
+          contentHeight: receiverColumn.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          visible: root.devices.length > 0
 
-            Rectangle {
-              anchors.fill: parent
-              radius: Style.space(6)
-              color: hover.containsMouse
-                ? Qt.rgba(root.bar.foreground.r, root.bar.foreground.g,
-                          root.bar.foreground.b, 0.08)
-                : "transparent"
-              Behavior on color { ColorAnimation { duration: 120 } }
-            }
+          Column {
+            id: receiverColumn
+            width: parent.width
+            spacing: root.rowGap
 
-            MouseArea {
-              id: hover
-              anchors.fill: parent
-              hoverEnabled: true
-              acceptedButtons: Qt.NoButton
-            }
+            Repeater {
+              model: root.orderedDevices()
+              delegate: BorderSurface {
+                id: row
+                required property var modelData
+                readonly property bool pending: root.actionDeviceId === modelData.id
+                width: receiverColumn.width
+                height: root.rowHeight
+                color: pending ? root.rowHover
+                     : rowMouse.containsMouse ? root.rowHover
+                     : root.rowFill
+                radius: Style.cornerRadius
+                borderSpec: Border.controlSpec(rowMouse.containsMouse ? "hover" : "normal",
+                                               root.fg, Color.accent)
 
-            Column {
-              anchors.left: parent.left
-              anchors.leftMargin: Style.space(10)
-              anchors.right: actions.left
-              anchors.rightMargin: Style.space(8)
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(1)
+                Behavior on color { ColorAnimation { duration: 120 } }
 
-              Text {
-                text: modelData.name
-                color: root.bar.foreground
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.body
-                elide: Text.ElideRight
-                width: parent.width
-              }
+                Text {
+                  id: rowIcon
+                  anchors.left: parent.left
+                  anchors.leftMargin: Style.spacing.lg
+                  anchors.verticalCenter: parent.verticalCenter
+                  // A television and a laptop are different things to cast to,
+                  // and the glyph says which without reading the model string.
+                  text: root.isTelevision(modelData) ? "󰔂" : "󰌢"
+                  color: rowMouse.containsMouse ? Color.accent : Qt.darker(root.fg, 1.2)
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.icon
+                }
 
-              Text {
-                // Model when the receiver advertises one, address otherwise --
-                // which is exactly the case for a hand-added receiver.
-                text: row.pending
-                  ? (root.actionMode === "extend" ? "Extending…" : "Mirroring…")
-                  : (modelData.model ? modelData.model : modelData.address)
-                color: Qt.darker(root.bar.foreground, 1.45)
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
-                width: parent.width
-              }
-            }
+                Column {
+                  anchors.left: rowIcon.right
+                  anchors.leftMargin: Style.spacing.lg
+                  anchors.right: parent.right
+                  anchors.rightMargin: Style.spacing.lg
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: 0
 
-            Row {
-              id: actions
-              anchors.right: parent.right
-              anchors.rightMargin: Style.space(6)
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(4)
-              opacity: row.pending ? 0.4 : 1
+                  Text {
+                    text: modelData.name
+                    color: root.fg
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.body
+                    elide: Text.ElideRight
+                    width: parent.width
+                  }
 
-              PanelActionButton {
-                iconText: "󰍹"
-                tooltipText: "Mirror this screen to " + modelData.name
-                foreground: root.bar.foreground
-                hoverColor: Color.accent
-                fontFamily: root.bar.fontFamily
-                enabled: !row.pending
-                onClicked: root.startCast(modelData.id, "mirror")
-              }
+                  Text {
+                    text: root.subtitleFor(modelData)
+                    color: Qt.darker(root.fg, 1.5)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    elide: Text.ElideRight
+                    width: parent.width
+                  }
+                }
 
-              PanelActionButton {
-                iconText: "󰍺"
-                // Named because picking the wrong output at the screen-share
-                // prompt silently produces a mirror, and the portal REMEMBERS
-                // that choice for every later cast.
-                tooltipText: "Extend onto " + modelData.name
-                           + " (pick the castr output if asked what to share)"
-                foreground: root.bar.foreground
-                hoverColor: Color.accent
-                fontFamily: root.bar.fontFamily
-                enabled: !row.pending
-                onClicked: root.startCast(modelData.id, "extend")
+                MouseArea {
+                  id: rowMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  enabled: !row.pending
+                  onClicked: root.startCast(modelData.id)
+                }
               }
             }
           }
