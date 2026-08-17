@@ -278,9 +278,33 @@ func (b *Backend) settle(cs *castSession, streaming bool) {
 
 func (b *Backend) fail(ctx context.Context, cs *castSession, msg string) error {
 	b.settle(cs, false)
-	_ = b.Stop(ctx, cs.device)
+
+	// Torn down WITHOUT going through Stop, and the distinction is the whole
+	// message. Stop announces idle, the daemon drops the session on it, and the
+	// Failed that followed then arrived for a device with no session -- dropped
+	// on the floor. A cast that timed out said nothing at all: no banner, no
+	// log line, no reason. Observed the first time a real cast timed out after
+	// the stopping/idle fix.
+	b.mu.Lock()
+	if b.sessions[cs.device.ID] == cs {
+		delete(b.sessions, cs.device.ID)
+	}
+	cs.stopping = true
+	b.mu.Unlock()
+
+	b.teardown(cs)
 	b.emit(cs.device, session.Failed, msg)
 	return errors.New(msg)
+}
+
+// teardown ends the child and undoes what the session set up, silently. The
+// callers own what the user is told.
+func (b *Backend) teardown(cs *castSession) error {
+	if cs.proc != nil {
+		_ = cs.proc.Terminate()
+		_ = cs.proc.Wait()
+	}
+	return b.undo(cs)
 }
 
 // pump reads the child's output until it exits.
@@ -403,11 +427,7 @@ func (b *Backend) Stop(ctx context.Context, device discovery.Device) error {
 	// no session at all.
 	b.emit(device, session.Stopping, "")
 
-	if cs.proc != nil {
-		_ = cs.proc.Terminate()
-		_ = cs.proc.Wait()
-	}
-	if err := b.undo(cs); err != nil {
+	if err := b.teardown(cs); err != nil {
 		// Reporting success while a virtual output remains is the failure
 		// shape this project keeps producing; say so instead.
 		//

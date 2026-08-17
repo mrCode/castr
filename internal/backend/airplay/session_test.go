@@ -828,3 +828,40 @@ func TestStopWalksTheStatesTheMachineAllows(t *testing.T) {
 		t.Errorf("states = %v, want stopping before idle", h.states)
 	}
 }
+
+func TestATimeoutTellsTheUserWhyRatherThanGoingQuiet(t *testing.T) {
+	// It went quiet. The teardown ran through Stop, Stop announced idle, the
+	// daemon dropped the session on it, and the Failed that followed arrived
+	// for a device with no session -- discarded. A cast that timed out
+	// produced no banner, no log line and no reason, which is the worst
+	// possible outcome for the one path the user most needs explained.
+	h := newHarness(t, "mirror session ready\n") // ready, capture never starts
+
+	err := h.backend.Start(context.Background(), device("a", "TV"), session.ModeMirror)
+
+	if err == nil {
+		t.Fatal("want a timeout error")
+	}
+	if !h.sawState(session.Failed) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		t.Errorf("states = %v, want a failure the user can see", h.states)
+	}
+}
+
+func TestAFailureIsNotAnnouncedAsACleanStop(t *testing.T) {
+	// Reporting idle for a cast that failed would clear the bar and leave the
+	// user believing they stopped it themselves.
+	h := newHarness(t, "mirror session ready\n")
+
+	_ = h.backend.Start(context.Background(), device("a", "TV"), session.ModeMirror)
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, s := range h.states {
+		if s == string(session.Idle) {
+			t.Errorf("states = %v, want no idle on a failure", h.states)
+			return
+		}
+	}
+}
