@@ -76,26 +76,59 @@ func TestEveryClassTheRendererEmitsIsOneTheWidgetStyles(t *testing.T) {
 	}
 }
 
-func TestBothBarsInvokeTheSameCommands(t *testing.T) {
-	// They must agree, and both must use `castr bar` -- the one status command
-	// that never spawns a daemon. Polling `castr status` instead would keep a
-	// daemon alive forever and defeat the idle timeout.
-	qml := repoFile(t, "share/quickshell/castr-indicator/Widget.qml")
+func TestTheWaybarModuleDrivesCastrThroughItsCommands(t *testing.T) {
+	// waybar cannot host a panel, so it stays on the standalone commands: the
+	// menu for choosing, stop for stopping, bar for the icon.
 	jsonc := repoFile(t, "share/waybar/cast-indicator.jsonc")
 
 	for _, want := range []string{"castr bar", "castr menu", "castr stop"} {
-		parts := strings.Fields(want)
 		if !strings.Contains(jsonc, want) {
 			t.Errorf("the waybar module does not run %q", want)
 		}
-		// QML passes argv as a list for the poll and a string for the clicks.
-		if !strings.Contains(qml, want) && !strings.Contains(qml, `"`+parts[1]+`"`) {
-			t.Errorf("the widget does not run %q", want)
+	}
+	// `castr status` spawns a daemon; waybar polls its exec every 2s.
+	if strings.Contains(jsonc, "castr status") {
+		t.Error("the waybar module polls `castr status`, which spawns a daemon")
+	}
+}
+
+func TestTheWidgetPollsOnlyTheCommandThatCannotSpawnADaemon(t *testing.T) {
+	// The Quickshell widget has its own panel and does NOT shell out to
+	// `castr menu`. What it must not do is poll anything that starts a daemon:
+	// a 2s timer doing that keeps one alive forever and the idle timeout --
+	// which exists so discovery stays warm and no longer -- means nothing.
+	//
+	// Opening the panel is a different matter: the user asked for it.
+	qml := repoFile(t, "share/quickshell/castr-indicator/Widget.qml")
+
+	if cmd := polledCommand(t, qml); !strings.Contains(cmd, `"bar"`) {
+		t.Errorf("the widget polls %s on a timer; only `castr bar` is safe there", cmd)
+	}
+	for _, want := range []string{`"start"`, `"stop"`, `"list"`} {
+		if !strings.Contains(qml, want) {
+			t.Errorf("the panel cannot %s anything", want)
 		}
 	}
-	if strings.Contains(jsonc, "castr status") || strings.Contains(qml, `"status"`) {
-		t.Error("a bar polls `castr status`, which spawns a daemon")
+}
+
+// polledCommand returns the command attached to the widget's repeating status
+// timer -- the one that runs whether or not anybody is looking.
+func polledCommand(t *testing.T, qml string) string {
+	t.Helper()
+	i := strings.Index(qml, "id: statusProc")
+	if i < 0 {
+		t.Fatal("no statusProc in the widget; this checker has drifted from it")
 	}
+	rest := qml[i:]
+	j := strings.Index(rest, "command:")
+	if j < 0 {
+		t.Fatal("statusProc has no command")
+	}
+	line := rest[j:]
+	if end := strings.Index(line, "\n"); end >= 0 {
+		line = line[:end]
+	}
+	return line
 }
 
 func TestTheWidgetIdIsNotTheOldPackagesId(t *testing.T) {
