@@ -815,3 +815,25 @@ func TestAFailedStopLeavesTheSessionStoppableAgain(t *testing.T) {
 		t.Error("the output is still there after a successful retry")
 	}
 }
+
+func TestTheTimeoutMessageLeadsWithTheScreenSharePrompt(t *testing.T) {
+	// An unanswered prompt has caused this timeout more often than everything
+	// else combined. Leading with ports and firewalls sent the reader after
+	// the network -- wrong three times, and it cost hours.
+	h := newHarness(t, "mirror session ready\n") // ready, but capture never starts
+
+	err := h.backend.Start(context.Background(), device("a", "TV"), session.ModeMirror)
+
+	if err == nil {
+		t.Fatal("want a timeout error")
+	}
+	msg := err.Error()
+	share := strings.Index(strings.ToLower(msg), "screen-share")
+	ports := strings.Index(msg, h.backend.Config.PortRange)
+	if share < 0 {
+		t.Fatalf("message never mentions the screen-share prompt: %s", msg)
+	}
+	if ports >= 0 && ports < share {
+		t.Errorf("message blames the network before the prompt:\n%s", msg)
+	}
+}

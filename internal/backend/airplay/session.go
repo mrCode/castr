@@ -249,10 +249,20 @@ func (b *Backend) failureMessage(cs *castSession, exited bool) string {
 		return fmt.Sprintf("%s exited before mirroring started: %s",
 			Binary, cs.scan.Tail(300))
 	}
+	// Ordered by how often each is actually the cause, which is NOT the order
+	// that sounds most technical. An unanswered screen-share prompt has now
+	// caused this timeout more times than everything else combined -- and the
+	// old wording, which led with ports and firewalls, sent the reader after
+	// the network every time. It was wrong on three separate occasions.
 	return fmt.Sprintf(
-		"%s never started mirroring within %.0fs. AirPlay needs the receiver to "+
-			"connect BACK to this machine on %s, and something is stopping that.",
-		cs.device.Name, b.ReadyTimeout.Seconds(), b.Config.PortRange)
+		"%s never started mirroring within %.0fs, and %s said nothing about why.\n"+
+			"  1. A screen-share prompt may be waiting for an answer. Look for a "+
+			"\"Select what to share\" window and pick the castr output.\n"+
+			"  2. If no prompt ever appears, the screen-share picker itself may be "+
+			"broken -- check custom_picker_binary in ~/.config/hypr/xdph.conf.\n"+
+			"  3. Only then suspect the network: the receiver connects BACK to this "+
+			"machine on %s.",
+		cs.device.Name, b.ReadyTimeout.Seconds(), Binary, b.Config.PortRange)
 }
 
 // settle records the startup outcome exactly once.
