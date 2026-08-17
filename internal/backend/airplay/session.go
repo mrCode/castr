@@ -398,6 +398,15 @@ func (b *Backend) Stop(ctx context.Context, device discovery.Device) error {
 	}
 
 	cs.stopping = true
+
+	// Announced BEFORE the teardown, and this is not cosmetic. The state
+	// machine allows streaming -> stopping -> idle; emitting idle straight from
+	// streaming is an invalid transition, which the daemon rejects, leaving the
+	// session listed as streaming after a stop that actually succeeded. It took
+	// a second stop to clear it, and only because the backend by then reported
+	// no session at all.
+	b.emit(device, session.Stopping, "")
+
 	if cs.proc != nil {
 		_ = cs.proc.Terminate()
 		_ = cs.proc.Wait()

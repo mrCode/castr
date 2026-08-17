@@ -44,6 +44,10 @@ func (b *fakeBackend) Stop(_ context.Context, device discovery.Device) error {
 	d := b.daemon
 	b.mu.Unlock()
 	if err == nil {
+		// The real backend walks streaming -> stopping -> idle, because the
+		// state machine rejects the jump. A fake that skipped the middle step
+		// modelled the bug rather than the contract, and both agreed for weeks.
+		d.OnState(device, session.Stopping, "")
 		d.OnState(device, session.Idle, "")
 	}
 	return err
@@ -442,5 +446,28 @@ func TestAStopThatGenuinelyFailedKeepsTheSession(t *testing.T) {
 
 	if len(r.daemon.Sessions()) != 1 {
 		t.Error("the session was dropped despite the teardown failing")
+	}
+}
+
+func TestStoppingAStreamingCastClearsTheRecord(t *testing.T) {
+	// It did not. `stop` succeeded, the child died, the output went -- and
+	// `status` still listed the cast as streaming, because idle-from-streaming
+	// is not a transition the machine allows and the daemon dropped it on the
+	// floor. Only a second stop cleared it, and only by accident.
+	r := newRig(t, dev("a", "TV"))
+	ctx := context.Background()
+	if err := r.daemon.Start(ctx, "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.state("a"); got != session.Streaming {
+		t.Fatalf("state = %q, want streaming before the stop", got)
+	}
+
+	if err := r.daemon.Stop(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+
+	if sessions := r.daemon.Sessions(); len(sessions) != 0 {
+		t.Errorf("sessions = %+v after a successful stop, want none", sessions)
 	}
 }

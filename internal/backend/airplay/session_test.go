@@ -837,3 +837,35 @@ func TestTheTimeoutMessageLeadsWithTheScreenSharePrompt(t *testing.T) {
 		t.Errorf("message blames the network before the prompt:\n%s", msg)
 	}
 }
+
+func TestStopWalksTheStatesTheMachineAllows(t *testing.T) {
+	// streaming -> stopping -> idle. Jumping straight to idle is rejected by
+	// the session state machine, and the daemon then keeps listing a cast that
+	// has already been torn down.
+	h := newHarness(t, readyOutput)
+	ctx := context.Background()
+	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.backend.Stop(ctx, device("a", "TV")); err != nil {
+		t.Fatal(err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var stopping, idle = -1, -1
+	for i, s := range h.states {
+		if s == string(session.Stopping) && stopping < 0 {
+			stopping = i
+		}
+		if s == string(session.Idle) && idle < 0 {
+			idle = i
+		}
+	}
+	if stopping < 0 {
+		t.Fatalf("never reported stopping (states: %v)", h.states)
+	}
+	if idle < 0 || idle < stopping {
+		t.Errorf("states = %v, want stopping before idle", h.states)
+	}
+}
