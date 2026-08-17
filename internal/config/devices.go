@@ -120,6 +120,20 @@ func SaveDevices(path string, devices []discovery.Device) error {
 	return nil
 }
 
+// CredsPath is doubletake's pairing-credentials file: one for every mode and
+// every receiver, because doubletake keys its contents by receiver.
+func CredsPath(stateDir string) string {
+	return filepath.Join(stateDir, "creds", "pairing.json")
+}
+
+// LegacyCredsFilenames are omarchy-cast's per-mode credential files. It split
+// them by mode on the mistaken belief that they held a portal token; both hold
+// the same receiver keys, so either one migrates cleanly.
+var LegacyCredsFilenames = []string{
+	"doubletake-mirror-credentials.json",
+	"doubletake-extend-credentials.json",
+}
+
 // LegacyName is the package castr replaces. Its files are read once, on first
 // run, so an upgrading user keeps their settings and their manual receivers.
 const LegacyName = "omarchy-cast"
@@ -147,6 +161,22 @@ func Migrate(configDir, stateDir, legacyConfigDir, legacyStateDir string) ([]str
 		return copied, err
 	} else if done {
 		copied = append(copied, newDevices)
+	}
+
+	// AirPlay pairing credentials. Without these an upgrading user has to walk
+	// to the television and retype a code for every receiver they had already
+	// paired with. omarchy-cast kept one file per mode holding the same keys;
+	// either will do, so take the first that exists.
+	newCreds := CredsPath(stateDir)
+	for _, name := range LegacyCredsFilenames {
+		done, err := copyIfAbsent(filepath.Join(legacyStateDir, name), newCreds, 0o600)
+		if err != nil {
+			return copied, err
+		}
+		if done {
+			copied = append(copied, newCreds)
+			break
+		}
 	}
 
 	return copied, nil

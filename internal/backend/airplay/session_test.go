@@ -724,3 +724,67 @@ func TestNoPanelSwitchMeansNoRestore(t *testing.T) {
 		t.Error("restored a panel that was never switched")
 	}
 }
+
+func TestAChildThatDiesWaitingForAPinFailsTheSession(t *testing.T) {
+	// awaitReady has already returned at the pin prompt, so nothing else owns
+	// the outcome. Leaving it meant the bar showed a cast forever, `stop` found
+	// nothing to stop, and submitting the code answered "no active session" for
+	// a session the daemon was still listing.
+	//
+	// Observed against a real Apple TV with pairing turned off: no code ever
+	// appeared and doubletake gave up on its own.
+	h := newHarness(t, "pairing required. "+PinPrompt+": ")
+	h.childExits = true
+
+	if err := h.backend.Start(context.Background(), device("a", "TV"), session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	if !h.sawState(session.AwaitingPin) {
+		t.Fatal("never reported awaiting_pin")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !h.sawState(session.Failed) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if !h.sawState(session.Failed) {
+		t.Error("a session whose child died awaiting a PIN was never failed")
+	}
+	if h.hypr.has(hypr.OutputMirror) {
+		t.Error("the dead session left its output behind")
+	}
+}
+
+func TestTheFailureAfterAPinPromptSuggestsWhereToLook(t *testing.T) {
+	// The user is standing at a television that showed nothing. "failed" alone
+	// sends them to the network; the receiver's own settings are the cause.
+	h := newHarness(t, "pairing required. "+PinPrompt+": ")
+	h.childExits = true
+	var reasons []string
+	h.backend.Emit = func(_ discovery.Device, s session.State, reason string) {
+		h.mu.Lock()
+		h.states = append(h.states, string(s))
+		if s == session.Failed {
+			reasons = append(reasons, reason)
+		}
+		h.mu.Unlock()
+	}
+
+	if err := h.backend.Start(context.Background(), device("a", "TV"), session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !h.sawState(session.Failed) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(reasons) == 0 {
+		t.Fatal("no failure reason")
+	}
+	if !strings.Contains(reasons[0], "pairing code") {
+		t.Errorf("reason = %q, want it to name the pairing code", reasons[0])
+	}
+}

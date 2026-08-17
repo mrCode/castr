@@ -227,7 +227,7 @@ func newAirPlayBackend(cfg config.Config, stateDir string) *airplay.Backend {
 		},
 		Hypr:         hyprctl,
 		ReadyTimeout: time.Duration(cfg.AirPlay.ReadyTimeout * float64(time.Second)),
-		Creds:        func(mode string) (string, error) { return credsPath(stateDir, mode) },
+		Creds:        func(string) (string, error) { return credsPath(stateDir) },
 		Spawn:        spawner(cfg, stateDir),
 
 		// The fallback, never the normal path -- see hypr.SwitchPanel.
@@ -236,15 +236,16 @@ func newAirPlayBackend(cfg config.Config, stateDir string) *airplay.Backend {
 	}
 }
 
-// credsPath gives each mode its own portal restore token.
+// credsPath is where doubletake keeps its AirPlay pairing credentials.
 //
-// Each mode captures a DIFFERENT virtual output. Sharing one token replays a
-// grant pointing at the other output -- or at the real panel -- and the cast
-// silently shows the wrong thing.
-func credsPath(stateDir, mode string) (string, error) {
+// ONE file for every mode and every receiver. doubletake keys the contents by
+// receiver itself, so a per-mode split gains nothing and costs the user a
+// second pairing -- typing the code off the television again the first time
+// they extend to a receiver they already mirror to.
+func credsPath(stateDir string) (string, error) {
 	dir := filepath.Join(stateDir, "creds")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("creating %s: %w", dir, err)
 	}
-	return filepath.Join(dir, mode+".json"), nil
+	return filepath.Join(dir, "pairing.json"), nil
 }

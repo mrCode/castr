@@ -314,7 +314,41 @@ func (b *Backend) pump(cs *castSession) {
 	// event, with the useful one arriving first.
 	if settled && streaming {
 		b.announceCrash(cs)
+		return
 	}
+
+	// A child that dies while waiting for a PIN is the exception: awaitReady
+	// already RETURNED at the pin prompt, so nobody else owns the outcome.
+	// Without this the session sits in awaiting_pin forever -- the bar shows a
+	// cast that is connecting, `stop` finds nothing to stop, and submitting the
+	// code answers "no active session" for a session the daemon is listing.
+	//
+	// Observed against a real Apple TV whose owner had turned pairing off, so
+	// the code never appeared and doubletake gave up on its own.
+	if !settled && cs.scan.NeedsPin() {
+		b.failAfterPin(cs)
+	}
+}
+
+// failAfterPin reports a child that died while the user was looking for a code.
+func (b *Backend) failAfterPin(cs *castSession) {
+	b.mu.Lock()
+	if cs.stopping || cs.crashed {
+		b.mu.Unlock()
+		return
+	}
+	cs.crashed = true
+	cs.settled = true
+	delete(b.sessions, cs.device.ID)
+	b.mu.Unlock()
+
+	_ = b.undo(cs)
+
+	msg := fmt.Sprintf(
+		"%s stopped waiting for its pairing code. If the receiver never showed "+
+			"one, check AirPlay access control on it. (%s)",
+		cs.device.Name, cs.scan.Tail(160))
+	b.emit(cs.device, session.Failed, msg)
 }
 
 // announceCrash reports a cast that died mid-stream and removes what it left.

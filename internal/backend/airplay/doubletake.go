@@ -78,9 +78,13 @@ func BuildArgv(cfg Config, address, credsPath string) []string {
 		argv = append(argv, "-no-audio")
 	}
 
-	// Each mode captures a different virtual output, so each needs its own
-	// portal restore token. Reusing doubletake's default credentials would
-	// replay a token pointing at the real panel and silently capture that.
+	// AirPlay PAIRING credentials -- the keys handed over after the user types
+	// the code shown on the receiver. The file is keyed by receiver, so one
+	// file serves every receiver and both modes.
+	//
+	// castr split this per mode at first, on the mistaken belief that it held
+	// a screen-share portal token. It does not, and the split meant pairing
+	// with the same television twice: once for mirror, again for extend.
 	if credsPath != "" {
 		argv = append(argv, "-creds", credsPath)
 	}
