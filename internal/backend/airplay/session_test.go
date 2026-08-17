@@ -219,11 +219,12 @@ func (f *fakeHypr) has(name string) bool {
 }
 
 type harness struct {
-	backend   *Backend
-	hypr      *fakeHypr
-	procs     []*fakeProc
+	backend *Backend
+	hypr    *fakeHypr
+	procs   []*fakeProc
+	// switched stays: no test may ever see it become true, because nothing in
+	// castr switches a panel now.
 	switched  bool
-	restored  bool
 	states    []string
 	credModes []string
 	argvs     [][]string
@@ -263,8 +264,6 @@ func newHarness(t *testing.T, chunks ...string) *harness {
 			h.mu.Unlock()
 			return p, nil
 		},
-		SwitchDisplay:  func() error { h.switched = true; return nil },
-		RestoreDisplay: func() error { h.restored = true; return nil },
 		Emit: func(d discovery.Device, s session.State, reason string) {
 			h.mu.Lock()
 			h.states = append(h.states, string(s))
@@ -292,40 +291,30 @@ func device(id, name string) discovery.Device {
 
 const readyOutput = "mirror session ready\nscreen capture started\n"
 
-func TestMirrorUsesAMirroredOutputAndLeavesThePanelAlone(t *testing.T) {
-	// The whole point: forcing the panel to 1080p cost a 240Hz display 60Hz.
+func TestMirrorCreatesNothingAndLeavesThePanelAlone(t *testing.T) {
+	// Two rules in one, and both were learned the hard way.
+	//
+	// The panel must keep its own mode: forcing it to 1080p cost a 240Hz
+	// display 60Hz and the user typed on it for a whole cast.
+	//
+	// And mirror creates NO virtual output. It used to create one that
+	// mirrored the panel, which the screen-share portal never offered --
+	// mirrored outputs are not active monitors, so nothing could ever capture
+	// it. It was a phantom monitor on every cast.
 	h := newHarness(t, readyOutput)
 
 	if err := h.backend.Start(context.Background(), device("a", "TV"), session.ModeMirror); err != nil {
 		t.Fatal(err)
 	}
 
-	if !h.hypr.has(hypr.OutputMirror) {
-		t.Error("no mirrored output was created")
-	}
-	// Not merely "an output named mirror" -- it must actually track the panel,
-	// or the receiver shows an empty desktop instead of the user's screen.
-	if got := h.hypr.mirrors(hypr.OutputMirror); got != "eDP-2" {
-		t.Errorf("mirror output mirrors %q, want the focused panel eDP-2", got)
+	if h.hypr.has(hypr.OutputMirror) || h.hypr.has(hypr.OutputExtend) {
+		t.Error("mirror created a virtual output that no portal can offer")
 	}
 	if h.switched {
-		t.Error("the panel was switched even though a virtual output worked")
+		t.Error("the panel was switched; mirror must never touch it")
 	}
 	if !h.sawState(session.Streaming) {
 		t.Error("never reported streaming")
-	}
-}
-
-func TestMirrorFallsBackToSwitchingOnlyWhenNoOutputCanBeMade(t *testing.T) {
-	h := newHarness(t, readyOutput)
-	h.hypr.failNew = true
-
-	if err := h.backend.Start(context.Background(), device("a", "TV"), session.ModeMirror); err != nil {
-		t.Fatal(err)
-	}
-
-	if !h.switched {
-		t.Error("want the panel switch as a fallback rather than refusing to cast")
 	}
 }
 
@@ -342,10 +331,12 @@ func TestExtendCreatesItsOwnIndependentOutput(t *testing.T) {
 	if h.hypr.has(hypr.OutputMirror) {
 		t.Error("extend must not create the mirror output")
 	}
-	// Extend is a SECOND desktop: mirroring the panel would make it a
-	// duplicate, which is what mirror mode is for.
+	// INDEPENDENT, not mirrored -- and this is what makes it usable at all.
+	// A mirrored output never appears in the compositor's active monitor list,
+	// so the screen-share portal cannot offer it; an independent one is a real
+	// monitor and the picker lists it. Verified against the real picker.
 	if got := h.hypr.mirrors(hypr.OutputExtend); got != "" {
-		t.Errorf("extend output mirrors %q, want an independent output", got)
+		t.Errorf("extend output mirrors %q; the portal would never offer it", got)
 	}
 }
 
@@ -403,8 +394,11 @@ func TestMirrorAndExtendCoexist(t *testing.T) {
 		t.Fatalf("extend refused while a mirror was active: %v", err)
 	}
 
-	if !h.hypr.has(hypr.OutputMirror) || !h.hypr.has(hypr.OutputExtend) {
-		t.Error("both sessions should own their own output")
+	if !h.hypr.has(hypr.OutputExtend) {
+		t.Error("extend lost its output to the mirror session")
+	}
+	if h.hypr.has(hypr.OutputMirror) {
+		t.Error("mirror created an output again")
 	}
 }
 
@@ -454,12 +448,12 @@ func TestSessionReadyAloneTimesOutAndCleansUp(t *testing.T) {
 	// leave nothing behind.
 	h := newHarness(t, "mirror session ready (data port: 49277)\n")
 
-	err := h.backend.Start(context.Background(), device("a", "TV"), session.ModeMirror)
+	err := h.backend.Start(context.Background(), device("a", "TV"), session.ModeExtend)
 
 	if err == nil {
 		t.Fatal("want a failure when capture never starts")
 	}
-	if h.hypr.has(hypr.OutputMirror) {
+	if h.hypr.has(hypr.OutputExtend) {
 		t.Error("a timed-out session left its output behind")
 	}
 	if !h.sawState(session.Failed) {
@@ -527,7 +521,8 @@ func TestStopReportsFailureWhenTheOutputSurvives(t *testing.T) {
 	// stays, and windows keep migrating onto it.
 	h := newHarness(t, readyOutput)
 	ctx := context.Background()
-	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeMirror); err != nil {
+	// Extend, because it is the mode that owns an output to fail to remove.
+	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeExtend); err != nil {
 		t.Fatal(err)
 	}
 	h.hypr.failRemove = true
@@ -585,7 +580,7 @@ func TestACrashAfterStreamingIsAnnouncedAndCleanedUp(t *testing.T) {
 	if !h.sawState(session.Failed) {
 		t.Fatal("a crash mid-stream was never reported")
 	}
-	if h.hypr.has(hypr.OutputMirror) {
+	if h.hypr.has(hypr.OutputExtend) {
 		t.Error("the crashed session left its output behind")
 	}
 }
@@ -641,10 +636,11 @@ func TestACastThatDiesLongAfterStartingIsAnnouncedAndCleanedUp(t *testing.T) {
 	// minutes in, and the bar used to keep showing a green, live cast.
 	h := newHarness(t, readyOutput)
 	ctx := context.Background()
-	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeMirror); err != nil {
+	// Extend: the mode with an output, so the cleanup is observable.
+	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeExtend); err != nil {
 		t.Fatal(err)
 	}
-	if !h.hypr.has(hypr.OutputMirror) {
+	if !h.hypr.has(hypr.OutputExtend) {
 		t.Fatal("no output to begin with")
 	}
 
@@ -661,7 +657,7 @@ func TestACastThatDiesLongAfterStartingIsAnnouncedAndCleanedUp(t *testing.T) {
 	if !h.sawState(session.Failed) {
 		t.Error("a cast that died mid-stream was never reported")
 	}
-	if h.hypr.has(hypr.OutputMirror) {
+	if h.hypr.has(hypr.OutputExtend) {
 		t.Error("the dead session left its output behind")
 	}
 }
@@ -685,43 +681,6 @@ func TestADeliberateStopIsNotReportedAsACrash(t *testing.T) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		t.Errorf("a deliberate stop was reported as a failure (states: %v)", h.states)
-	}
-}
-
-func TestAFallbackPanelSwitchIsRestoredOnStop(t *testing.T) {
-	// If we took the fallback and changed the user's panel, we own putting it
-	// back. Leaving it at 1080p60 after the cast ends is worse than the cast.
-	h := newHarness(t, readyOutput)
-	h.hypr.failNew = true
-	ctx := context.Background()
-	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeMirror); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := h.backend.Stop(ctx, device("a", "TV")); err != nil {
-		t.Fatal(err)
-	}
-
-	if !h.restored {
-		t.Error("the panel was switched for the cast and never switched back")
-	}
-}
-
-func TestNoPanelSwitchMeansNoRestore(t *testing.T) {
-	// Restoring a panel we never touched would fight whatever the user set
-	// during the cast.
-	h := newHarness(t, readyOutput)
-	ctx := context.Background()
-	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeMirror); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := h.backend.Stop(ctx, device("a", "TV")); err != nil {
-		t.Fatal(err)
-	}
-
-	if h.restored {
-		t.Error("restored a panel that was never switched")
 	}
 }
 
@@ -751,7 +710,7 @@ func TestAChildThatDiesWaitingForAPinFailsTheSession(t *testing.T) {
 	if !h.sawState(session.Failed) {
 		t.Error("a session whose child died awaiting a PIN was never failed")
 	}
-	if h.hypr.has(hypr.OutputMirror) {
+	if h.hypr.has(hypr.OutputExtend) {
 		t.Error("the dead session left its output behind")
 	}
 }
@@ -796,7 +755,7 @@ func TestAFailedStopLeavesTheSessionStoppableAgain(t *testing.T) {
 	// reached on real hardware.
 	h := newHarness(t, readyOutput)
 	ctx := context.Background()
-	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeMirror); err != nil {
+	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeExtend); err != nil {
 		t.Fatal(err)
 	}
 	h.hypr.failRemove = true
@@ -811,7 +770,7 @@ func TestAFailedStopLeavesTheSessionStoppableAgain(t *testing.T) {
 	if err := h.backend.Stop(ctx, device("a", "TV")); err != nil {
 		t.Errorf("the retry failed: %v", err)
 	}
-	if h.hypr.has(hypr.OutputMirror) {
+	if h.hypr.has(hypr.OutputExtend) {
 		t.Error("the output is still there after a successful retry")
 	}
 }

@@ -48,14 +48,6 @@ type Backend struct {
 	Emit         Emit
 	ReadyTimeout time.Duration
 
-	// SwitchDisplay and RestoreDisplay are the FALLBACK for when no virtual
-	// output can be created. They are not the normal path: forcing the panel
-	// to 1080p on a display with no native 1080p mode gave 60Hz on a 240Hz
-	// panel, and the user typed on a screen four times slower for the whole
-	// cast while blaming the network.
-	SwitchDisplay  func() error
-	RestoreDisplay func() error
-
 	mu       sync.Mutex
 	sessions map[string]*castSession
 }
@@ -67,9 +59,9 @@ type castSession struct {
 	scan   *Scanner
 
 	// What this session set up, so teardown undoes exactly what it caused and
-	// never a sibling session's.
-	virtual         string
-	switchedDisplay bool
+	// never a sibling session's. Mirror sets up nothing; only extend has an
+	// output to own.
+	virtual string
 
 	// The startup outcome and the child's exit race each other. Both sides
 	// record their half under the backend mutex, and whichever finds the other
@@ -175,24 +167,28 @@ func (b *Backend) prepareOutput(cs *castSession) error {
 		return nil
 	}
 
-	// Mirror: a virtual output that MIRRORS the panel, so the panel keeps its
-	// own resolution and refresh rate.
-	source, err := hypr.Focused(b.Hypr)
-	if err == nil {
-		_, _ = hypr.CleanupStrays(b.Hypr, inUse)
-		if name, cerr := hypr.CreateOutput(b.Hypr, hypr.OutputMirror, source); cerr == nil {
-			cs.virtual = name
-			return nil
-		}
-	}
-
-	// Fallback only. A slower panel beats refusing to cast.
-	if b.SwitchDisplay != nil {
-		if err := b.SwitchDisplay(); err != nil {
-			return fmt.Errorf("no virtual output and could not switch the display: %w", err)
-		}
-		cs.switchedDisplay = true
-	}
+	// MIRROR CREATES NOTHING, and that is the finding of an afternoon at a
+	// real Apple TV rather than a simplification.
+	//
+	// castr used to create a virtual output that mirrored the panel, to hand
+	// the encoder a 1080p source while the panel kept its own mode. The output
+	// was created correctly and mirrored correctly -- and the screen-share
+	// portal never offered it. A mirrored output is not an ACTIVE monitor on
+	// Hyprland (it is absent from `hyprctl monitors`, which is why this package
+	// reads `monitors all`), and the portal enumerates active monitors only.
+	// The picker listed one source, the panel, every time.
+	//
+	// So the output was a phantom monitor created on every cast that nothing
+	// could ever capture. What actually happened -- doubletake capturing the
+	// panel and scaling it down itself -- worked, looked right on the
+	// television, and left the panel at its own 240Hz. That is now what castr
+	// asks for, honestly, instead of building something unreachable and
+	// getting the same result by accident.
+	//
+	// EXTEND is different and keeps its output: an independent headless output
+	// IS an active monitor, and the picker does offer it. Verified in the same
+	// session, in the same dialog.
+	_, _ = hypr.CleanupStrays(b.Hypr, inUse)
 	return nil
 }
 
@@ -443,12 +439,6 @@ func (b *Backend) undo(cs *castSession) error {
 		} else {
 			cs.virtual = ""
 		}
-	}
-	if cs.switchedDisplay && b.RestoreDisplay != nil {
-		if err := b.RestoreDisplay(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		cs.switchedDisplay = false
 	}
 	return firstErr
 }

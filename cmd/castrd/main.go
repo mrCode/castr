@@ -235,10 +235,6 @@ func newAirPlayBackend(cfg config.Config, stateDir string) *airplay.Backend {
 		ReadyTimeout: time.Duration(cfg.AirPlay.ReadyTimeout * float64(time.Second)),
 		Creds:        func(mode string) (string, error) { return credsPath(stateDir, mode) },
 		Spawn:        spawner(cfg, stateDir),
-
-		// The fallback, never the normal path -- see hypr.SwitchPanel.
-		SwitchDisplay:  func() error { return hypr.SwitchPanel(hyprctl, stateDir) },
-		RestoreDisplay: func() error { return hypr.RestorePanel(hyprctl, stateDir) },
 	}
 }
 
