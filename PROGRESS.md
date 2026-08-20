@@ -35,6 +35,7 @@ cast to a real Apple TV.
 | `internal/notify` | **done** | the notification policy |
 | `cmd/castrd` | **done** | daemon entry point; owns lock-order, process groups, notify |
 | `cmd/castr-tui` | not started | bubbletea; ship v1 without it if it slips |
+| plugin repo | **created** | ~/workspace/castr-indicator — manifest at root, for the marketplace |
 | packaging | **written** | PKGBUILD + install notes; NOT yet submitted to the AUR |
 
 Go module dependencies: `github.com/BurntSushi/toml` only (no transitive deps).
