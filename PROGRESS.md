@@ -1,13 +1,18 @@
 # castr — port progress
 
-> **Next session starts here:** confirm extend captures its own output.
-> `castr start airplay:10.10.10.231 extend`, then in the share dialog pick
-> **(1920x1080) (castr)** — NOT eDP-2 — and check `pw-dump` reports a
-> 1920x1080 capture. If it does, extend is verified and the only thing left
-> before an AUR submission is the rest of the checklist below.
+> **PUBLISHED 2026-08-20.** v0.1.0 is tagged, on the AUR (`yay -S castr`), the
+> bar widget is its own repo at github.com/mrCode/castr-indicator, and the
+> marketplace listing is issue #934 on HANCORE-linux/omarchy-plugin-marketplace,
+> awaiting review.
 >
-> The test receiver 10.10.10.231 is already paired (no PIN). "meeting room-2"
-> is NOT paired and never displays its code — avoid it.
+> **Next session:** nothing is blocking. If reviewers ask for changes, edit the
+> widget in THIS repo under `share/quickshell/castr-indicator/` — where
+> internal/ui's tests read it — then run `packaging/sync-plugin-repo.sh --write`
+> and commit in the plugin repo. Editing the plugin repo directly makes the two
+> drift silently.
+>
+> Test receiver: `10.10.10.231`, already paired, no PIN. "meeting room-2"
+> (AppleTV14,1) is NOT paired and never displays its code — avoid it.
 
 Living status of the Go rewrite. **Read this first** in a new session, before
 `docs/design.md`. Update it in the same commit as the work it describes.
@@ -34,9 +39,9 @@ cast to a real Apple TV.
 | `cmd/castr` | **done** | wires the real effects; two static binaries, 6.5 MB |
 | `internal/notify` | **done** | the notification policy |
 | `cmd/castrd` | **done** | daemon entry point; owns lock-order, process groups, notify |
-| `cmd/castr-tui` | not started | bubbletea; ship v1 without it if it slips |
-| plugin repo | **created** | ~/workspace/castr-indicator — manifest at root, for the marketplace |
-| packaging | **written** | PKGBUILD + install notes; NOT yet submitted to the AUR |
+| `cmd/castr-tui` | not started | bubbletea; deliberately skipped for v1 |
+| plugin repo | **published** | ~/workspace/castr-indicator — manifest at root, for the marketplace |
+| packaging | **on the AUR** | PKGBUILD + install notes; NOT yet submitted to the AUR |
 
 Go module dependencies: `github.com/BurntSushi/toml` only (no transitive deps).
 Package dependencies are unchanged: avahi, plus doubletake as an optdepend.
@@ -53,9 +58,9 @@ observed streaming the webcam, and it is the only part needing cgo.
 5. ~~picker + cmd/castr~~
 6. ~~cmd/castrd~~
 7. ~~Quickshell widget~~ — ported, plugin id changed to `castr.indicator`
-8. **HARDWARE VERIFICATION** — mirror PASSES; extend's capture source is the
-   one thing left to confirm (see the findings at the top)
-9. **packaging** — PKGBUILD written; AUR submission after hardware passes
+8. ~~HARDWARE VERIFICATION~~ — mirror AND extend both pass. Extend captures
+   the `castr` output at 1920x1080, confirmed via pw-dump.
+9. ~~packaging~~ — v0.1.0 on the AUR, built from the published tarball
 10. **TUI** — optional, after v1
 
 ## Invariants — every one is a bug already shipped and fixed
@@ -135,6 +140,36 @@ Ticked items have a test that fails if the rule is broken (mutation-checked).
 - **Hardware verification is a checklist, not a test.** Before any release:
   picture appears, capture traces to the portal's screen node (not a camera,
   via `pw-dump` link tracing), panel keeps its mode, teardown leaves nothing.
+
+## The freeze, and what caused it — 2026-08-20
+
+Casts died after ~30 seconds with `writev: broken pipe`. That error names the
+network, so two sessions went to firewalls, the portal, the picker, and my own
+pipe handling before the config was suspected at all.
+
+**It was `target_latency_ms = 50`**, carried over by migration from
+omarchy-cast, where it had been lowered chasing input lag. Against an
+AppleTV11,1: dead at 26s and 30s, preceded by `GET_PARAMETER` heartbeats
+answered HTTP 400. At doubletake's default of 100 the same cast ran nine
+minutes unbroken at a steady 510 KB/s. It presents as a responsiveness knob and
+behaves as a stability one.
+
+castr now RAISES anything below 80 and says so, rather than rejecting the file
+— rejecting would fall back to defaults and silently discard the user's encoder
+and fps alongside the one bad value.
+
+Two measurement traps met on the way, both of which nearly produced a wrong
+diagnosis:
+
+- `pw-top`'s RATE column reads 0 for these video nodes even while video is
+  demonstrably flowing. Use bytes on the wire (`ss -tin`, `bytes_sent`) instead:
+  ~510 KB/s is a live mirror, ~150-200 is audio only, 0 is dead.
+- Setting `hide_vapostproc = false` to test a theory reintroduced the
+  documented Hyprland DMA-BUF failure and killed video entirely. I nearly
+  reported my own experiment as the bug.
+
+For EXTEND, low or zero throughput is normal when the second desktop is empty —
+h264 sends almost nothing for a static image. That is not a stall.
 
 ## Hardware findings, 2026-08-17 — READ THIS FIRST
 

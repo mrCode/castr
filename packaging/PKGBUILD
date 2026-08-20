@@ -17,16 +17,21 @@ depends=('avahi')
 # because it lives in the AUR, which a depend cannot pull in for you.
 optdepends=(
   'doubletake-git: AirPlay streaming (REQUIRED to cast; 0.4.0 cannot capture on Hyprland)'
-  'hyprland: virtual outputs for mirror and extend modes'
+  'hyprland: required in practice — castr drives its outputs and screen-share portal'
   'libnotify: desktop notifications'
-  'quickshell: bar indicator on Omarchy Quarto and later'
+  'quickshell: bar widget on Omarchy Quarto and later (see castr-indicator)'
   'waybar: bar indicator on earlier setups'
 )
 makedepends=('go' 'git')
+
+# The binaries are built with -s -w, so there are no debug symbols to split
+# out. Without this makepkg still emits an empty castr-debug package and warns
+# about it on every build.
+options=('!debug')
 install="${pkgname}.install"
 
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('fd99250e304dfff0e596d2fe94399061297507423cc1812d1b1f2240cabd3e51')
 
 build() {
   cd "${srcdir}/${pkgname}-${pkgver}"
