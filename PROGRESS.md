@@ -14,6 +14,15 @@
 > to castr's README, where they belong — they describe doubletake's ports, not
 > anything the widget does.
 >
+> Clearing that capability first cost information: the plugin README ended up
+> saying a firewall mattered without saying which ports. It now names them in a
+> table (UDP 5353; TCP+UDP 60000-60010) and says what breaks without them, which
+> is everything actionable and matches nothing the scanner looks for. **Removing
+> a scanner match is not the same as removing a hazard — check what the reader
+> loses.** Plugin repo is at `eb22e2c`; the listing's baseline is pinned to
+> `e17c202` and will re-pin whenever the issue is next edited. The difference is
+> documentation only, so it was left rather than churning the issue.
+>
 > **Two things about that bot:** it re-scans on issue EDIT, not on repo push —
 > pushing a fix and commenting changed nothing until the issue body was edited.
 > And its checklist has FIVE required items; reading the template with
