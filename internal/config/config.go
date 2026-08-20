@@ -56,10 +56,16 @@ type AirPlay struct {
 	// at the marker, not at the ceiling.
 	ReadyTimeout float64 `toml:"ready_timeout"`
 
-	// TargetLatencyMS is doubletake's -target-latency-ms: the end-to-end
-	// delay the sender aims for, which the receiver buffers to. Lower means a
-	// more responsive cursor and less typing lag, at the cost of tolerance for
-	// network jitter -- too low and the receiver stutters.
+	// TargetLatencyMS is doubletake's -target-latency-ms: the end-to-end delay
+	// the sender aims for, which the receiver buffers to. Lower means a more
+	// responsive cursor and less typing lag.
+	//
+	// TOO LOW AND THE RECEIVER HANGS UP. Measured against an AppleTV11,1: at
+	// 50 the television closed the stream after 26 and 30 seconds ("writev:
+	// broken pipe", preceded by GET_PARAMETER heartbeats answered HTTP 400);
+	// at doubletake's default of 100 the same cast ran five and a half minutes
+	// unbroken at a steady 510 KB/s. It looks like a responsiveness knob and
+	// behaves like a stability one.
 	TargetLatencyMS int `toml:"target_latency_ms"`
 
 	// Audio off removes audio/video sync from the pipeline, which is worth
@@ -126,10 +132,34 @@ func Load(path string) (Config, error) {
 		return Default(), fmt.Errorf("parsing %s: %w", path, err)
 	}
 
+	// Repaired, not rejected. Rejecting would fall back to the defaults and
+	// silently discard the user's encoder and fps along with the one bad
+	// value -- and the value in question arrived here by MIGRATION from
+	// omarchy-cast, where it was tuned before anyone knew what it did.
+	notes := cfg.repair()
+
 	if err := cfg.Validate(); err != nil {
 		return Default(), fmt.Errorf("%s: %w", path, err)
 	}
+	if len(notes) > 0 {
+		return cfg, fmt.Errorf("%s: %s", path, strings.Join(notes, "; "))
+	}
 	return cfg, nil
+}
+
+// repair raises settings that are valid TOML and known to break real casts,
+// returning a note for each. The config is kept; only the hazard is fixed.
+func (c *Config) repair() []string {
+	var notes []string
+	if c.AirPlay.TargetLatencyMS > 0 && c.AirPlay.TargetLatencyMS < MinSafeLatencyMS {
+		notes = append(notes, fmt.Sprintf(
+			"target_latency_ms was %d, raised to %d: below %d a receiver hangs up "+
+				"mid-cast (measured: an Apple TV closed the stream after ~30s at 50, "+
+				"and ran unbroken at 100)",
+			c.AirPlay.TargetLatencyMS, MinSafeLatencyMS, MinSafeLatencyMS))
+		c.AirPlay.TargetLatencyMS = MinSafeLatencyMS
+	}
+	return notes
 }
 
 // Validate rejects settings that would fail later in a way nobody could trace
@@ -151,6 +181,17 @@ func (c Config) Validate() error {
 	if c.AirPlay.TargetLatencyMS < 0 {
 		return fmt.Errorf("target_latency_ms cannot be negative, got %d", c.AirPlay.TargetLatencyMS)
 	}
+	if c.AirPlay.TargetLatencyMS > 0 && c.AirPlay.TargetLatencyMS < MinSafeLatencyMS {
+		// Refused rather than warned. The symptom is a cast that runs for
+		// half a minute and then dies with a network error, which sends the
+		// reader after their firewall -- it cost two sessions here before the
+		// setting was suspected at all.
+		return fmt.Errorf(
+			"target_latency_ms = %d is below %d, which makes receivers hang up "+
+				"mid-cast (measured: an Apple TV closed the stream after ~30s at 50, "+
+				"and ran unbroken at 100). Raise it, or set 0 for doubletake's default",
+			c.AirPlay.TargetLatencyMS, MinSafeLatencyMS)
+	}
 	if c.AirPlay.Bitrate < 0 {
 		return fmt.Errorf("bitrate cannot be negative, got %d", c.AirPlay.Bitrate)
 	}
@@ -165,6 +206,11 @@ func validEncoder(name string) bool {
 	}
 	return false
 }
+
+// MinSafeLatencyMS is the lowest end-to-end target that kept a real receiver
+// connected. Below it, the television closes the stream after ~30 seconds and
+// the error names the network, not the setting.
+const MinSafeLatencyMS = 80
 
 // minPorts is what one session actually consumes: doubletake was observed
 // using UDP 60000-60002 and TCP 60003 for a single cast. A range narrower than

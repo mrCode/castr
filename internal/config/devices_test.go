@@ -173,7 +173,7 @@ func newDirs(t *testing.T) dirs {
 
 func TestAnUpgradeKeepsTheOldConfigAndReceivers(t *testing.T) {
 	d := newDirs(t)
-	body := "[airplay]\ntarget_latency_ms = 50\n"
+	body := "[capture]\nencoder = \"vaapi\"\n\n[airplay]\ntarget_latency_ms = 50\n"
 	if err := os.WriteFile(filepath.Join(d.legacyConfig, "config.toml"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -189,13 +189,19 @@ func TestAnUpgradeKeepsTheOldConfigAndReceivers(t *testing.T) {
 	if len(copied) != 2 {
 		t.Errorf("copied %v, want both the config and the receivers", copied)
 	}
-	cfg, err := Load(filepath.Join(d.config, "config.toml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.AirPlay.TargetLatencyMS != 50 {
-		t.Errorf("target_latency_ms = %d, want the user's own setting carried over",
+	// Loaded with a note, not an error: the real omarchy-cast config on the
+	// machine this was ported from carried target_latency_ms = 50, which is
+	// below the floor and gets raised. Everything else must survive.
+	cfg, note := Load(filepath.Join(d.config, "config.toml"))
+	if cfg.AirPlay.TargetLatencyMS < MinSafeLatencyMS {
+		t.Errorf("target_latency_ms = %d, want it raised on migration",
 			cfg.AirPlay.TargetLatencyMS)
+	}
+	if note == nil {
+		t.Error("the value was changed silently; the user should be told")
+	}
+	if cfg.Capture.Encoder != "vaapi" {
+		t.Errorf("encoder = %q, want the rest of the migrated file kept", cfg.Capture.Encoder)
 	}
 	if got := LoadDevices(DevicesPath(d.state)); len(got) != 1 || got[0].ID != "meeting" {
 		t.Errorf("receivers = %+v, want the hand-typed one carried over", got)

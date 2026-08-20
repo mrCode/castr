@@ -63,7 +63,7 @@ bitrate = 8000
 code = "1234"
 hide_vapostproc = false
 ready_timeout = 90
-target_latency_ms = 50
+target_latency_ms = 90
 audio = false
 `))
 	if err != nil {
@@ -73,7 +73,7 @@ audio = false
 	want := Config{
 		Capture: Capture{FPS: 50, Encoder: "vaapi"},
 		AirPlay: AirPlay{PortRange: "50000-50020", Bitrate: 8000, Code: "1234",
-			HideVAPostproc: false, ReadyTimeout: 90, TargetLatencyMS: 50, Audio: false},
+			HideVAPostproc: false, ReadyTimeout: 90, TargetLatencyMS: 90, Audio: false},
 	}
 	if cfg != want {
 		t.Errorf("cfg  = %+v\nwant = %+v", cfg, want)
@@ -195,5 +195,41 @@ func TestTheConfigDirectoryFollowsXDG(t *testing.T) {
 
 	if got := Dir(); got != "/tmp/xdg-test/castr" {
 		t.Errorf("Dir() = %q, want it under XDG_CONFIG_HOME", got)
+	}
+}
+
+func TestALatencyTargetLowEnoughToBreakCastsIsRaised(t *testing.T) {
+	// 50 looked like a responsiveness tweak and was a stability bug: the Apple
+	// TV closed the stream after ~30s with "writev: broken pipe", which reads
+	// as a network fault and sent two sessions chasing firewalls. At 100 the
+	// same cast ran five and a half minutes unbroken.
+	//
+	// Raised rather than rejected, because rejecting throws away the encoder
+	// and fps in the same file -- and this value arrives by migration from an
+	// app where it was tuned before anyone knew what it did.
+	cfg, err := Load(write(t, "[capture]\nencoder = \"vaapi\"\n\n[airplay]\ntarget_latency_ms = 50\n"))
+
+	if cfg.AirPlay.TargetLatencyMS < MinSafeLatencyMS {
+		t.Errorf("target_latency_ms = %d, want it raised to at least %d",
+			cfg.AirPlay.TargetLatencyMS, MinSafeLatencyMS)
+	}
+	if cfg.Capture.Encoder != "vaapi" {
+		t.Errorf("encoder = %q, want the rest of the file kept", cfg.Capture.Encoder)
+	}
+	if err == nil {
+		t.Error("the repair was silent; the user should be told")
+	} else if !strings.Contains(err.Error(), "hangs up") {
+		t.Errorf("note = %q, want it to say what actually happens", err)
+	}
+}
+
+func TestTheDefaultAndZeroAreBothAccepted(t *testing.T) {
+	// 0 means "let doubletake decide", which is always safe.
+	for _, v := range []int{0, MinSafeLatencyMS, 100, 250} {
+		cfg := Default()
+		cfg.AirPlay.TargetLatencyMS = v
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("target_latency_ms = %d rejected: %v", v, err)
+		}
 	}
 }
