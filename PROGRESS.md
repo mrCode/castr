@@ -1,9 +1,23 @@
 # castr — port progress
 
-> **PUBLISHED 2026-08-20.** v0.1.0 is tagged, on the AUR (`yay -S castr`), the
-> bar widget is its own repo at github.com/mrCode/castr-indicator, and the
-> marketplace listing is issue #934 on HANCORE-linux/omarchy-plugin-marketplace,
-> awaiting review.
+> **PUBLISHED 2026-08-20.** v0.1.0 is tagged, live on the AUR (`yay -S castr`,
+> indexed), and the bar widget is its own repo at
+> github.com/mrCode/castr-indicator. The marketplace listing is
+> [issue #934](https://github.com/HANCORE-linux/omarchy-plugin-marketplace/issues/934):
+> `validated`, one human security review away.
+>
+> **The listing's security baseline** reports `findings: []` and one capability,
+> `package-manager`, from `yay -S castr doubletake-git` in the README and in the
+> panel's "castr is not installed" message. That is deliberate and was explained
+> in a comment: it is how you install the dependency the plugin cannot work
+> without. The `privilege` capability was cleared by moving the `sudo ufw` rules
+> to castr's README, where they belong — they describe doubletake's ports, not
+> anything the widget does.
+>
+> **Two things about that bot:** it re-scans on issue EDIT, not on repo push —
+> pushing a fix and commenting changed nothing until the issue body was edited.
+> And its checklist has FIVE required items; reading the template with
+> `head -80` truncated the fifth and earned a `needs-fixes` label.
 >
 > **Next session:** nothing is blocking. If reviewers ask for changes, edit the
 > widget in THIS repo under `share/quickshell/castr-indicator/` — where
