@@ -45,6 +45,13 @@ Panel {
   property string mode: "mirror"         // the pill, applied to whatever is clicked
   property string actionDeviceId: ""
 
+  // Whether the castr binary exists at all. Checked through sh, because a
+  // Process whose binary is missing emits NO onExited -- it fails to start and
+  // says nothing, so the obvious "did it exit non-zero" test never fires. sh is
+  // always present, so its exit code is a signal we actually receive.
+  property bool installed: true
+  property bool installChecked: false
+
   readonly property color fg: bar ? bar.foreground : Color.foreground
   readonly property color rowFill: Style.normalFillFor(fg)
   readonly property color rowHover: Style.hoverFillFor(fg, Color.accent)
@@ -63,7 +70,7 @@ Panel {
   function refreshStatus() { if (!statusProc.running) statusProc.running = true }
 
   function refreshPanel() {
-    if (!root.opened) return
+    if (!root.opened || !root.installed) return
     root.loading = true
     if (!listProc.running) listProc.running = true
     if (!sessionsProc.running) sessionsProc.running = true
@@ -134,6 +141,15 @@ Panel {
   // ---------------------------------------------------------------- processes
 
   Process {
+    id: installProc
+    command: ["sh", "-c", "command -v castr >/dev/null"]
+    onExited: function(exitCode) {
+      root.installed = exitCode === 0
+      root.installChecked = true
+    }
+  }
+
+  Process {
     id: statusProc
     command: ["castr", "bar"]
     stdout: StdioCollector {
@@ -200,7 +216,12 @@ Panel {
     running: true
     repeat: true
     triggeredOnStart: true
-    onTriggered: root.refreshStatus()
+    onTriggered: {
+      // Re-checked, not checked once: someone installing castr while the shell
+      // runs should see the widget come alive without restarting anything.
+      if (!installProc.running) installProc.running = true
+      if (root.installed) root.refreshStatus()
+    }
   }
 
   Timer {
@@ -223,11 +244,13 @@ Panel {
     // cannot see is a control you cannot find, and this one stops the cast.
     text: root.casting ? "󰄠" : "󰄡"
     active: root.casting || root.busy
-    tooltipText: root.tooltip
+    tooltipText: root.installed
+      ? root.tooltip
+      : "castr is not installed\nInstall it with:  yay -S castr doubletake-git"
 
     onPressed: function(b) {
       if (b === Qt.RightButton) {
-        if (root.casting || root.busy) root.stopCast("")
+        if (root.installed && (root.casting || root.busy)) root.stopCast("")
       } else {
         root.toggle()
       }
@@ -297,10 +320,12 @@ Panel {
             }
 
             Text {
-              // The first line only: the rest of the tooltip is the click hint,
-              // which is noise inside the panel it is describing.
-              text: String(root.tooltip).split("\n")[0]
-              color: root.failed ? Color.urgent : Qt.darker(root.fg, 1.4)
+              // "Not casting" and "castr is not installed" look identical
+              // otherwise, and the second is the one the reader can act on.
+              text: !root.installed ? "castr is not installed"
+                  : String(root.tooltip).split("\n")[0]
+              color: (root.failed || !root.installed) ? Color.urgent
+                   : Qt.darker(root.fg, 1.4)
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.caption
               elide: Text.ElideRight
@@ -365,8 +390,22 @@ Panel {
           visible: root.sessions.length > 0
         }
 
+        // ---------- nothing to drive: say so, with the way out ----------
+        Text {
+          width: parent.width
+          visible: !root.installed
+          text: "This widget drives the castr command, which is not on your PATH.\n\n"
+              + "    yay -S castr doubletake-git\n\n"
+              + "The bar picks it up on its own once it is installed."
+          color: Qt.darker(root.fg, 1.2)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
+
         // ---------- mode, chosen once ----------
         PanelSectionHeader {
+          visible: root.installed
           width: parent.width
           text: "MODE"
           foreground: root.fg
@@ -375,6 +414,7 @@ Panel {
 
         ButtonGroup {
           width: parent.width
+          visible: root.installed
           options: [
             { value: "mirror", label: "Mirror" },
             { value: "extend", label: "Extend" }
@@ -388,6 +428,7 @@ Panel {
 
         Text {
           width: parent.width
+          visible: root.installed
           text: root.mode === "extend"
             ? "A second desktop on the receiver. Pick the castr output if asked what to share."
             : "Shows this screen on the receiver."
@@ -397,11 +438,16 @@ Panel {
           wrapMode: Text.WordWrap
         }
 
-        PanelSeparator { width: parent.width; foreground: root.fg }
+        PanelSeparator {
+          width: parent.width
+          foreground: root.fg
+          visible: root.installed
+        }
 
         // ---------- receivers ----------
         PanelSectionHeader {
           width: parent.width
+          visible: root.installed
           text: root.loading && root.devices.length === 0 ? "LOOKING FOR RECEIVERS" : "RECEIVERS"
           foreground: root.fg
           fontFamily: root.bar.fontFamily
@@ -419,7 +465,7 @@ Panel {
 
         Text {
           width: parent.width
-          visible: root.listError === "" && !root.loading && root.devices.length === 0
+          visible: root.installed && root.listError === "" && !root.loading && root.devices.length === 0
           text: "Nothing is advertising AirPlay here. A receiver that does not "
               + "answer mDNS can still be added: castr add <address>"
           color: Qt.darker(root.fg, 1.5)
@@ -439,7 +485,7 @@ Panel {
           contentHeight: receiverColumn.implicitHeight
           clip: true
           boundsBehavior: Flickable.StopAtBounds
-          visible: root.devices.length > 0
+          visible: root.installed && root.devices.length > 0
 
           Column {
             id: receiverColumn

@@ -167,3 +167,28 @@ func TestTheWidgetShowsAnIconInEveryState(t *testing.T) {
 		t.Errorf("both states show %q; the user cannot tell them apart", m[1])
 	}
 }
+
+func TestTheWidgetSaysWhenCastrIsNotInstalled(t *testing.T) {
+	// A Process whose binary is missing emits NO onExited in Quickshell -- it
+	// fails to start and says nothing -- so the obvious "did it exit non-zero"
+	// check never fires and the widget shows "Not casting" forever. That is
+	// indistinguishable from a working install with nothing casting.
+	//
+	// The probe therefore goes through sh, which always exists, so its exit
+	// code is a signal that actually arrives.
+	qml := repoFile(t, "share/quickshell/castr-indicator/Widget.qml")
+
+	if !strings.Contains(qml, "command -v castr") {
+		t.Error("the widget never checks whether castr exists")
+	}
+	if !strings.Contains(qml, `"sh"`) {
+		t.Error("the check does not go through sh; a missing binary would be silent")
+	}
+	if !strings.Contains(qml, "not installed") {
+		t.Error("nothing tells the user castr is missing")
+	}
+	// The way out has to be in the message; a bare complaint is not actionable.
+	if !strings.Contains(qml, "yay -S castr") {
+		t.Error("the message does not say how to install it")
+	}
+}
