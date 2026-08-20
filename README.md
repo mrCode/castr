@@ -6,12 +6,10 @@ monitor — from your desktop's menu, with a bar indicator.
 Two small static binaries -- a client and a daemon. `avahi` for discovery, `doubletake` for AirPlay,
 `hyprctl` for outputs; nothing else at runtime.
 
-> **Status: working, verified on hardware, not yet packaged.** Mirror and
+> **Status: released, verified on hardware.** v0.1.0 is on the AUR. Mirror and
 > extend have both been cast to a real Apple TV — picture confirmed, capture
 > traced to the screen-share portal rather than a camera, the panel left at its
 > own refresh rate, and a nine-minute mirror session held at a steady rate.
-> What is missing is distribution: castr is not on the AUR yet, so for now you
-> build it yourself.
 
 ## Why a rewrite
 
