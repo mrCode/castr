@@ -17,9 +17,11 @@
 Living status of the Go rewrite. **Read this first** in a new session, before
 `docs/design.md`. Update it in the same commit as the work it describes.
 
-Reference implementation: `~/workspace/omarchy-cast` (Python, v0.3.0, works, on
-the AUR). Port *from* it; do not delete it until castr reaches parity and has
-cast to a real Apple TV.
+Reference implementation: `~/workspace/omarchy-cast` (Python, v0.3.0, still on
+the AUR). castr has reached parity and cast to a real Apple TV, and
+omarchy-cast is uninstalled from this machine — but keep the source repo: it is
+still published for other people, and it remains the record of why several of
+the rules here exist.
 
 ## Where things stand
 
