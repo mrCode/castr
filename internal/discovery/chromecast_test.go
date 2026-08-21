@@ -100,3 +100,62 @@ func TestBrowseAllReturnsBothProtocols(t *testing.T) {
 		t.Fatalf("got %d devices, want 2: %+v", len(devices), devices)
 	}
 }
+
+// A receiver's name is an unauthenticated TXT record, and avahi's \NNN escapes
+// decode any byte -- including a newline. The menu joins its entries with
+// newlines, so a name carrying one adds LINES to the menu, which lets whoever
+// advertised it forge the trailing "[id]" the selection is parsed back out of.
+func TestADeviceNameCannotInjectExtraMenuLines(t *testing.T) {
+	hostile := `=;wlo1;IPv4;evil;_googlecast._tcp;local;e.local;192.168.100.90;8009;` +
+		`"id=deadbeef" "fn=Living Room\010Stop casting (Living Room)" "md=Ultra\010\010"`
+
+	devices := Parse(hostile, ProtocolChromecast)
+	if len(devices) != 1 {
+		t.Fatalf("got %d devices, want 1", len(devices))
+	}
+	for _, field := range []string{devices[0].Name, devices[0].Model} {
+		if strings.ContainsAny(field, "\n\r\x00") {
+			t.Errorf("control characters survived into %q", field)
+		}
+	}
+}
+
+// Entries are passed as arguments to the menu program, where a leading dash
+// reads as an option rather than as a receiver.
+func TestADeviceNameCannotBeginWithADash(t *testing.T) {
+	line := `=;wlo1;IPv4;evil;_googlecast._tcp;local;e.local;192.168.100.90;8009;` +
+		`"id=deadbeef" "fn=--help" "md=x"`
+
+	devices := Parse(line, ProtocolChromecast)
+	if len(devices) != 1 {
+		t.Fatalf("got %d devices", len(devices))
+	}
+	if strings.HasPrefix(devices[0].Name, "-") {
+		t.Errorf("Name = %q, which the menu program reads as an option", devices[0].Name)
+	}
+}
+
+func TestADeviceNameCannotFillTheMenu(t *testing.T) {
+	long := strings.Repeat("A", 500)
+	line := `=;wlo1;IPv4;evil;_googlecast._tcp;local;e.local;192.168.100.90;8009;` +
+		`"id=deadbeef" "fn=` + long + `" "md=x"`
+
+	devices := Parse(line, ProtocolChromecast)
+	if len(devices) != 1 {
+		t.Fatalf("got %d devices", len(devices))
+	}
+	if len(devices[0].Name) > maxNameLength {
+		t.Errorf("name is %d characters; one receiver can crowd out the rest", len(devices[0].Name))
+	}
+}
+
+// An advertised port outside the valid range would reach net.Dial as garbage.
+func TestAnOutOfRangePortIsIgnored(t *testing.T) {
+	for _, port := range []string{"0", "-1", "99999999", "4294967296"} {
+		line := `=;wlo1;IPv4;evil;_googlecast._tcp;local;e.local;192.168.100.90;` + port +
+			`;"id=deadbeef" "fn=x" "md=x"`
+		if devices := Parse(line, ProtocolChromecast); len(devices) != 0 {
+			t.Errorf("port %q was accepted as %d", port, devices[0].Port)
+		}
+	}
+}

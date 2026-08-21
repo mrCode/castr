@@ -72,8 +72,21 @@ checked.
 After the pipeline starts, castr reads the PipeWire graph and confirms the
 source feeding the encoder is the node the portal granted. A link to any other
 node -- or no link at all within the timeout -- tears the session down and
-reports a failure. The check runs for every cast, on every backend that
-captures the screen itself.
+reports a failure. It runs **before the stream is reachable from the network**,
+so a refused capture is never fetchable, and it **keeps running** every few
+seconds for the life of the cast.
+
+Repeating it is not belt-and-braces. The granted node can go away underneath a
+pipeline that survives -- pipewire restarting on an upgrade, the grant revoked,
+a monitor unplugged -- and the source has autoconnect on, because the table
+above shows that turning it off captures nothing. What it reaches for next is
+the default video device. A check taken once at startup would have proved
+something about the first two seconds of an hour-long cast.
+
+One thing the fd does not do: possessing the portal's PipeWire descriptor
+proves nothing about what is being captured. Every measurement in the table
+above was taken on a correctly inherited portal fd, including the two that
+captured the webcam.
 
 The one property worth stating plainly: castr never streams a source it has not
 identified. A cast that cannot prove what it is capturing does not run.

@@ -112,3 +112,37 @@ func TestVerifyStopsWhenTheContextIsCancelled(t *testing.T) {
 		t.Fatalf("got %v, want context.Canceled", err)
 	}
 }
+
+// Verify answers "did this start correctly". Recheck answers "is it still what
+// it was" -- and those need different answers to an empty graph.
+func TestRecheckRefusesASourceThatChangedToACamera(t *testing.T) {
+	err := guard(&fakeGraph{answers: [][]Node{{webcam}}}).Recheck(1)
+	if !errors.Is(err, ErrWrongSource) {
+		t.Fatalf("got %v, want ErrWrongSource", err)
+	}
+	if !strings.Contains(err.Error(), "changed") {
+		t.Errorf("message %q does not say the source changed", err)
+	}
+}
+
+func TestRecheckAcceptsTheGrantedNode(t *testing.T) {
+	if err := guard(&fakeGraph{answers: [][]Node{{screen}}}).Recheck(1); err != nil {
+		t.Fatalf("Recheck: %v", err)
+	}
+}
+
+// A momentarily missing link is not evidence of a substitution, and tearing a
+// cast down for one would make the guard the commonest cause of failure. A
+// capture that has really stopped is caught by the pipeline exiting.
+func TestRecheckToleratesAMomentarilyEmptyGraph(t *testing.T) {
+	if err := guard(&fakeGraph{}).Recheck(1); err != nil {
+		t.Fatalf("Recheck failed on an empty graph: %v", err)
+	}
+}
+
+func TestRecheckToleratesAnUnreadableGraph(t *testing.T) {
+	g := guard(&fakeGraph{err: errors.New("pw-dump vanished")})
+	if err := g.Recheck(1); err != nil {
+		t.Fatalf("Recheck failed on an unreadable graph: %v", err)
+	}
+}

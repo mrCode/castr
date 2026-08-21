@@ -39,6 +39,11 @@ func NewLive(cfg Config, emit Emit) *Backend {
 		Serve: func(bindIP string, port int, dir string) (Server, error) {
 			return stream.ServeDir(bindIP, port, dir)
 		},
+		Restrict: func(s Server, receiverIP string) {
+			if f, ok := s.(*stream.Files); ok {
+				f.AllowFrom = receiverIP
+			}
+		},
 		Dial: func(ctx context.Context, addr string) (Caster, error) {
 			c, err := cast.Dial(ctx, addr)
 			if err != nil {
@@ -125,6 +130,16 @@ func (p *process) Wait() error {
 func (p *process) Terminate() error {
 	if p.cmd.Process == nil {
 		return nil
+	}
+	// Checked BEFORE signalling. Once the child has been reaped its pid is
+	// back in the kernel's pool, and syscall.Kill bypasses the "already
+	// finished" guard that os.Process.Signal would apply -- so signalling an
+	// exited child sends SIGTERM, and then SIGKILL, to whatever process group
+	// now holds that number.
+	select {
+	case <-p.done:
+		return nil
+	default:
 	}
 	pid := p.cmd.Process.Pid
 

@@ -2,6 +2,9 @@ package stream
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"math"
@@ -22,12 +25,21 @@ import (
 // abandoned after a few hundred kilobytes, with no player state ever reported.
 // See docs/chromecast.md.
 type Files struct {
+	// AllowFrom is the only address served, when set. The receiver's address
+	// is known before the server starts, and nothing else has any business
+	// fetching the user's screen.
+	//
+	// Not a boundary on its own -- an address is forgeable on a hostile LAN --
+	// which is why the unguessable path below exists as well.
+	AllowFrom string
+
 	// Log, when set, is called for every request with a one-line summary.
 	// Without it a receiver that fetches a playlist and gives up is
 	// indistinguishable from one that never asked.
 	Log func(string)
 
 	dir      string
+	prefix   string
 	listener net.Listener
 	srv      *http.Server
 
@@ -37,22 +49,44 @@ type Files struct {
 	playlist int
 }
 
-// ServeDir starts a server for one directory.
+// ServeDir starts a server for one directory, reachable only under a path
+// that cannot be guessed.
+//
+// The path matters because of CORS. The receiver is a web page and will not
+// play HLS without Access-Control-Allow-Origin, so the stream must be readable
+// cross-origin -- which means any page the user's browser happens to load can
+// fetch it too, if it can find it. A fixed port and a fixed filename is a few
+// hundred fetches to sweep a /24. Sixteen random bytes in the path is not.
+//
+// The receiver never types this URL; it is handed the whole thing over the
+// Cast connection, so the length costs nobody anything.
 func ServeDir(bindIP string, port int, dir string) (*Files, error) {
+	secret := make([]byte, 16)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, fmt.Errorf("securing the stream: %w", err)
+	}
+
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", bindIP, port))
 	if err != nil {
 		return nil, fmt.Errorf("serving the stream on %s:%d: %w", bindIP, port, err)
 	}
 
-	f := &Files{dir: dir, listener: ln}
-	f.srv = &http.Server{Handler: http.HandlerFunc(f.handle)}
+	f := &Files{dir: dir, prefix: hex.EncodeToString(secret), listener: ln}
+	f.srv = &http.Server{
+		Handler: http.HandlerFunc(f.handle),
+		// A segment fetch is a few hundred kilobytes over a local network.
+		// Without a header timeout anything on that network can hold
+		// connections open indefinitely by sending a request slowly.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	go f.srv.Serve(ln)
 	return f, nil
 }
 
 // URLFor is the address of one file in the served directory.
 func (f *Files) URLFor(name string) string {
-	return fmt.Sprintf("http://%s/%s", f.listener.Addr().String(), name)
+	return fmt.Sprintf("http://%s/%s/%s", f.listener.Addr().String(), f.prefix, name)
 }
 
 // Close stops serving.
@@ -75,6 +109,13 @@ func (f *Files) Stats() (bytes int64, requests, playlistReads int) {
 }
 
 func (f *Files) handle(w http.ResponseWriter, r *http.Request) {
+	if !f.permitted(r) {
+		// Deliberately indistinguishable from a wrong path: a caller that is
+		// not the receiver learns nothing about whether a cast is running.
+		http.NotFound(w, r)
+		return
+	}
+
 	// Only the basename is ever used, so a request cannot walk out of the
 	// directory with .. or an absolute path. The server is reachable by
 	// anything on the local network, and the directory it is pointed at sits
@@ -138,6 +179,28 @@ func (f *Files) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.served += counted.n
 	f.mu.Unlock()
+}
+
+// permitted reports whether a request may be answered at all.
+//
+// Two independent conditions, because neither is sufficient alone: the secret
+// path is what a browser on some other machine cannot guess, and the address
+// check is what stops a page running on the receiver's own network segment
+// from being handed the stream if the path ever leaks.
+func (f *Files) permitted(r *http.Request) bool {
+	prefix, _, found := strings.Cut(strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/"), "/")
+	if !found || subtle.ConstantTimeCompare([]byte(prefix), []byte(f.prefix)) != 1 {
+		return false
+	}
+	if f.AllowFrom == "" {
+		return true
+	}
+
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return host == f.AllowFrom
 }
 
 func (f *Files) note(format string, args ...any) {

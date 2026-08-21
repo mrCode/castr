@@ -92,6 +92,10 @@ type Backend struct {
 	Graph        capture.Graph
 	StartCapture func(opts capture.Options) (Pipeline, error)
 	Serve        func(bindIP string, port int, dir string) (Server, error)
+	// Restrict, when set, tells the server which address may fetch the
+	// stream. Applied before the server can be reached rather than after,
+	// since "after" is a window in which anything on the network can read it.
+	Restrict     func(server Server, receiverIP string)
 	Dial         func(ctx context.Context, addr string) (Caster, error)
 	LocalAddress func(host string) (string, error)
 	TempDir      func() (string, error)
@@ -103,6 +107,7 @@ type Backend struct {
 
 type castSession struct {
 	device   discovery.Device
+	granted  uint32
 	portal   Portal
 	pipeline Pipeline
 	server   Server
@@ -115,6 +120,55 @@ type castSession struct {
 
 // ErrNoPin exists because the daemon offers pin submission for every backend.
 var ErrNoPin = errors.New("a Chromecast does not ask for a pairing code")
+
+// errStopped ends a start that the user cancelled while it was still setting
+// up. Starting a cast can take minutes -- most of it spent waiting at the
+// share prompt -- and a stop arriving in that window used to tear down an
+// empty record while the start went on to bring up a capture, an HTTP server
+// serving the screen to the network, and a session on the television, none of
+// which anything was left tracking. The user had pressed stop; their screen
+// was still being broadcast.
+var errStopped = errors.New("the cast was stopped while it was starting")
+
+// resources is everything a session holds. Taking them is what makes teardown
+// happen exactly once: whichever goroutine takes them owns releasing them, and
+// the other finds nothing left to release.
+type resources struct {
+	caster   Caster
+	app      App
+	server   Server
+	pipeline Pipeline
+	portal   Portal
+	dir      string
+}
+
+// take removes the session's resources and returns them.
+func (b *Backend) take(cs *castSession) resources {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	r := resources{cs.caster, cs.app, cs.server, cs.pipeline, cs.portal, cs.dir}
+	cs.caster, cs.server, cs.pipeline, cs.portal, cs.dir = nil, nil, nil, nil, ""
+	cs.app = App{}
+	return r
+}
+
+// adopt records a resource the session now owns, and reports whether the cast
+// has been stopped underneath it.
+//
+// The resource is stored even when the answer is "stopped", so that the error
+// path releases it rather than the caller having to unwind by hand at every
+// step.
+func (b *Backend) adopt(cs *castSession, assign func()) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	assign()
+	if cs.stopping {
+		return errStopped
+	}
+	return nil
+}
 
 // SubmitPin is never valid here.
 func (b *Backend) SubmitPin(context.Context, discovery.Device, string) error {
@@ -141,16 +195,72 @@ func (b *Backend) Start(ctx context.Context, device discovery.Device, mode strin
 
 	b.emit(device, session.Connecting, "")
 
-	if err := b.start(ctx, cs, mode); err != nil {
-		b.teardown(cs)
+	err := b.start(ctx, cs, mode)
+
+	// Checked once more with everything in place: a stop that arrived during
+	// the last step must not leave a cast running that nothing is tracking.
+	b.mu.Lock()
+	if cs.stopping && err == nil {
+		err = errStopped
+	}
+	pipeline := cs.pipeline
+	b.mu.Unlock()
+
+	if err != nil {
+		b.release(b.take(cs))
 		b.forget(device.ID)
+		if errors.Is(err, errStopped) {
+			// Stop already announced itself; saying it failed as well would
+			// report the user's own cancellation as a fault.
+			return nil
+		}
 		b.emit(device, session.Failed, err.Error())
 		return err
 	}
 
 	b.emit(device, session.Streaming, "")
-	go b.watch(cs)
+	go b.watch(cs, pipeline)
+	go b.keepVerifying(cs, pipeline)
 	return nil
+}
+
+// RecheckInterval is how often a running cast re-proves what it is capturing.
+//
+// Verifying once at startup would leave the rest of the cast -- possibly hours
+// -- unchecked, while the docs promise that castr never streams a source it
+// has not identified. The granted node can go away underneath a running
+// pipeline: pipewire.service restarts on an upgrade, the user revokes the
+// grant, a monitor is unplugged. The source has autoconnect on, because no
+// configuration of it fails safe, so what it reaches for next is the default
+// video device.
+//
+// One pw-dump every few seconds is nothing beside H.264 encoding.
+const RecheckInterval = 3 * time.Second
+
+// keepVerifying tears the cast down if it stops capturing the granted screen.
+func (b *Backend) keepVerifying(cs *castSession, pipeline Pipeline) {
+	guard := &capture.Guard{Graph: b.Graph, Granted: cs.granted}
+	ticker := time.NewTicker(RecheckInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		b.mu.Lock()
+		live := b.sessions[cs.device.ID] == cs && !cs.stopping
+		b.mu.Unlock()
+		if !live {
+			return
+		}
+
+		err := guard.Recheck(pipeline.Pid())
+		if err == nil {
+			continue
+		}
+
+		b.release(b.take(cs))
+		b.forget(cs.device.ID)
+		b.emit(cs.device, session.Failed, err.Error())
+		return
+	}
 }
 
 func (b *Backend) start(ctx context.Context, cs *castSession, mode string) error {
@@ -174,7 +284,9 @@ func (b *Backend) start(ctx context.Context, cs *castSession, mode string) error
 	if err != nil {
 		return fmt.Errorf("getting permission to capture the screen: %w", err)
 	}
-	cs.portal = portal
+	if err := b.adopt(cs, func() { cs.portal, cs.granted = portal, portal.Node() }); err != nil {
+		return err
+	}
 
 	serial, err := b.SerialOf(portal.Node())
 	if err != nil {
@@ -185,7 +297,9 @@ func (b *Backend) start(ctx context.Context, cs *castSession, mode string) error
 	if err != nil {
 		return fmt.Errorf("making room for the stream: %w", err)
 	}
-	cs.dir = dir
+	if err := b.adopt(cs, func() { cs.dir = dir }); err != nil {
+		return err
+	}
 
 	opts := capture.Options{
 		NodeID: portal.Node(), Serial: serial, FD: portal.Descriptor(),
@@ -198,7 +312,9 @@ func (b *Backend) start(ctx context.Context, cs *castSession, mode string) error
 	if err != nil {
 		return fmt.Errorf("starting the capture: %w", err)
 	}
-	cs.pipeline = pipeline
+	if err := b.adopt(cs, func() { cs.pipeline = pipeline }); err != nil {
+		return err
+	}
 
 	// Before a single byte can be fetched. The guard is the only thing
 	// standing between a mismatched capture node and the user's webcam on a
@@ -212,7 +328,12 @@ func (b *Backend) start(ctx context.Context, cs *castSession, mode string) error
 	if err != nil {
 		return err
 	}
-	cs.server = server
+	if b.Restrict != nil {
+		b.Restrict(server, cs.device.Address)
+	}
+	if err := b.adopt(cs, func() { cs.server = server }); err != nil {
+		return err
+	}
 
 	// A receiver will not start on a playlist holding one segment: HLS clients
 	// want a few target durations of media available before they begin.
@@ -224,13 +345,17 @@ func (b *Backend) start(ctx context.Context, cs *castSession, mode string) error
 	if err != nil {
 		return err
 	}
-	cs.caster = caster
+	if err := b.adopt(cs, func() { cs.caster = caster }); err != nil {
+		return err
+	}
 
 	app, err := caster.Launch(ctx, DefaultMediaReceiver)
 	if err != nil {
 		return err
 	}
-	cs.app = app
+	if err := b.adopt(cs, func() { cs.app = app }); err != nil {
+		return err
+	}
 
 	return caster.Load(ctx, app,
 		server.URLFor(capture.PlaylistName), capture.HLSContentType, "castr")
@@ -248,8 +373,11 @@ func castPort(d discovery.Device) int {
 
 // watch reports a capture that dies on its own, rather than leaving the
 // session green while the television shows nothing.
-func (b *Backend) watch(cs *castSession) {
-	_ = cs.pipeline.Wait()
+//
+// The pipeline is passed in rather than read off the session, because by the
+// time it exits the session may have been torn down and its fields taken.
+func (b *Backend) watch(cs *castSession, pipeline Pipeline) {
+	_ = pipeline.Wait()
 
 	b.mu.Lock()
 	stopping := cs.stopping
@@ -258,7 +386,7 @@ func (b *Backend) watch(cs *castSession) {
 		return
 	}
 
-	b.teardown(cs)
+	b.release(b.take(cs))
 	b.forget(cs.device.ID)
 	b.emit(cs.device, session.Failed, "the capture stopped unexpectedly")
 }
@@ -280,19 +408,22 @@ func (b *Backend) Stop(ctx context.Context, device discovery.Device) error {
 	// like a cast that is still running.
 	b.emit(device, session.Stopping, "")
 
-	if cs.caster != nil && cs.app.TransportID != "" {
-		_ = cs.caster.StopApp(ctx, cs.app)
+	held := b.take(cs)
+	if held.caster != nil && held.app.TransportID != "" {
+		_ = held.caster.StopApp(ctx, held.app)
 	}
-	err := b.teardown(cs)
+	err := b.release(held)
 	b.forget(device.ID)
 	b.emit(device, session.Idle, "")
 	return err
 }
 
-// teardown releases everything the session took, in the reverse of the order
-// it was taken, and keeps going after a failure so one stuck resource cannot
-// strand the rest.
-func (b *Backend) teardown(cs *castSession) error {
+// release closes everything, in the reverse of the order it was taken, and
+// keeps going after a failure so one stuck resource cannot strand the rest.
+//
+// It takes the resources by value rather than reading the session, so it never
+// touches shared state and can safely run while a start is still in flight.
+func (b *Backend) release(r resources) error {
 	var first error
 	fail := func(err error) {
 		if err != nil && first == nil {
@@ -300,20 +431,20 @@ func (b *Backend) teardown(cs *castSession) error {
 		}
 	}
 
-	if cs.caster != nil {
-		fail(cs.caster.Close())
+	if r.caster != nil {
+		fail(r.caster.Close())
 	}
-	if cs.server != nil {
-		fail(cs.server.Close())
+	if r.server != nil {
+		fail(r.server.Close())
 	}
-	if cs.pipeline != nil {
-		fail(cs.pipeline.Terminate())
+	if r.pipeline != nil {
+		fail(r.pipeline.Terminate())
 	}
-	if cs.portal != nil {
-		fail(cs.portal.Close())
+	if r.portal != nil {
+		fail(r.portal.Close())
 	}
-	if cs.dir != "" {
-		fail(os.RemoveAll(cs.dir))
+	if r.dir != "" {
+		fail(os.RemoveAll(r.dir))
 	}
 	return first
 }

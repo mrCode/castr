@@ -193,6 +193,26 @@ func (c *Conn) request(ctx context.Context, dest, namespace string, payload map[
 // that says whether it worked -- so matching on the request id alone reports
 // success for a stream the receiver is about to reject.
 func (c *Conn) watch(ctx context.Context, fn func(namespace, payload string, done func(error)) bool) error {
+	wait, cancel, err := c.addWatcher(fn)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	return wait(ctx)
+}
+
+// addWatcher registers fn and returns a function that waits for its verdict.
+//
+// Registration is separate from waiting, and SYNCHRONOUS, because the caller
+// usually has to send a request before it can wait -- and starting the watcher
+// in a goroutine does not register it. Nothing synchronises `go watch(...)`
+// with the send that follows it, and in practice the sending goroutine does
+// not yield, so the watcher is registered AFTER the request is on the wire.
+// A verdict arriving in that window is dropped, and the caller then blocks
+// until its timeout, or accepts a later unrelated status as its answer.
+func (c *Conn) addWatcher(fn func(namespace, payload string, done func(error)) bool) (
+	wait func(context.Context) error, cancel func(), err error) {
+
 	result := make(chan error, 1)
 	finish := func(err error) {
 		select {
@@ -204,7 +224,7 @@ func (c *Conn) watch(ctx context.Context, fn func(namespace, payload string, don
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return c.err()
+		return nil, nil, c.err()
 	}
 	c.nextWatch++
 	id := c.nextWatch
@@ -213,20 +233,22 @@ func (c *Conn) watch(ctx context.Context, fn func(namespace, payload string, don
 	}
 	c.mu.Unlock()
 
-	defer func() {
+	cancel = func() {
 		c.mu.Lock()
 		delete(c.watchers, id)
 		c.mu.Unlock()
-	}()
-
-	select {
-	case err := <-result:
-		return err
-	case <-c.done:
-		return c.err()
-	case <-ctx.Done():
-		return ctx.Err()
 	}
+	wait = func(ctx context.Context) error {
+		select {
+		case err := <-result:
+			return err
+		case <-c.done:
+			return c.err()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return wait, cancel, nil
 }
 
 func (c *Conn) err() error {

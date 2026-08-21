@@ -5,7 +5,9 @@ package capture
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -82,10 +84,19 @@ func (p *PipeWire) SourcesFeeding(pid int) ([]Node, error) {
 	// finds nothing -- and a check that silently finds nothing is worse than
 	// no check, because it reports the pipeline captured nothing while the
 	// pipeline is running fine.
+	// Compared as a NUMBER, not as text.
+	//
+	// pw-dump emits application.process.id as a JSON number, so it arrives
+	// here as a float64, and fmt.Sprint on a float64 switches to scientific
+	// notation at a million: pid 1048576 formats as "1.048576e+06", which
+	// matches no pid string ever. pid_max on this machine is 4194304, so a
+	// string comparison silently stops matching for 76% of the pid space --
+	// and the guard then reports that a perfectly good pipeline captured
+	// nothing, for reasons nobody could find.
 	clients := map[uint32]bool{}
 	for _, o := range objects {
 		if strings.HasSuffix(o.Type, "Client") &&
-			propString(o.Info.Props, "application.process.id") == fmt.Sprint(pid) {
+			propUint(o.Info.Props, "application.process.id") == uint32(pid) {
 			clients[o.ID] = true
 		}
 	}
@@ -135,11 +146,18 @@ func propString(props map[string]any, key string) string {
 func propUint(props map[string]any, key string) uint32 {
 	switch v := props[key].(type) {
 	case float64:
+		// Out-of-range values would wrap silently into a plausible id, so a
+		// value that cannot be a PipeWire object id is reported as absent.
+		if v < 0 || v > math.MaxUint32 {
+			return 0
+		}
 		return uint32(v)
 	case string:
-		var n uint32
-		fmt.Sscan(v, &n)
-		return n
+		n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 32)
+		if err != nil {
+			return 0
+		}
+		return uint32(n)
 	}
 	return 0
 }

@@ -4,13 +4,21 @@
 // It exists because Chromecast capture is castr's own job: AirPlay delegates
 // the whole of it to doubletake, which does its own portal handshake.
 //
-// THE RULE THIS PACKAGE EXISTS TO ENFORCE: the returned fd is a PipeWire
-// connection on which the granted node is the ONLY thing visible. A capture
-// pipeline must be given that fd, and must inherit it. omarchy-cast's Chromecast
-// backend was disabled after it was observed encoding the built-in WEBCAM and
-// streaming it to a television; the pipeline had fallen back to the ordinary
-// PipeWire daemon and picked the default video source. A cast that might
-// broadcast someone's camera is not a feature that ships behind a warning.
+// WHAT THE fd DOES, AND WHAT IT DOES NOT DO. The fd is the PipeWire connection
+// the capture pipeline must be given and must inherit. It is NOT a sandbox:
+// this file used to claim the granted node is the only thing visible on it,
+// and that is measurably false. On a live portal session, with the granted
+// fd inherited correctly, a pipeline asking for a node id that does not match
+// captured the built-in WEBCAM -- 1.5 MB of it in seven seconds. The table is
+// in docs/capture-safety.md.
+//
+// So possessing this fd proves nothing about what is being captured. That
+// guarantee lives in internal/capture.Guard, which reads the PipeWire graph
+// and confirms the pipeline is linked to the granted node. omarchy-cast's
+// Chromecast backend was disabled after it was observed encoding the webcam
+// and streaming it to a television, and a cast that might broadcast someone's
+// camera is not a feature that ships behind a warning -- so do not conclude
+// from this fd that the guard is redundant.
 package portal
 
 import (

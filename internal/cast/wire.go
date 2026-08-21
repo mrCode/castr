@@ -37,8 +37,10 @@ const (
 	fieldPayloadUTF8     = 6
 	fieldPayloadBinary   = 7
 
-	wireVarint = 0
-	wireBytes  = 2
+	wireVarint  = 0
+	wireFixed64 = 1
+	wireBytes   = 2
+	wireFixed32 = 5
 
 	payloadTypeString = 0
 	payloadTypeBinary = 1
@@ -125,6 +127,20 @@ func Decode(body []byte) (Message, error) {
 				return Message{}, errors.New("cast: malformed varint")
 			}
 			body = body[n:]
+		case wireFixed64, wireFixed32:
+			// Skipped, not rejected. The file's promise is that a message
+			// carrying a field this code has never heard of is still readable
+			// -- and readLoop treats a decode error as fatal, so one firmware
+			// revision adding a fixed-width field to CastMessage would end
+			// every cast with "the receiver closed the connection".
+			width := 8
+			if wire == wireFixed32 {
+				width = 4
+			}
+			if len(body) < width {
+				return Message{}, errors.New("cast: fixed-width field runs past end of message")
+			}
+			body = body[width:]
 		case wireBytes:
 			size, n := binary.Uvarint(body)
 			if n <= 0 {

@@ -118,12 +118,14 @@ func (c *Conn) Load(ctx context.Context, app App, m Media) error {
 	if m.Live {
 		streamType = "LIVE"
 	}
-	// The verdict is watched for BEFORE the request is sent, because the
-	// receiver can answer faster than a subscription registered afterwards.
-	verdict := make(chan error, 1)
-	go func() {
-		verdict <- c.watch(ctx, loadVerdict)
-	}()
+	// Registered BEFORE the request is sent, and synchronously. The receiver
+	// can answer faster than this goroutine would get back to a subscription,
+	// and a verdict that arrives before the watcher exists is lost.
+	waitForVerdict, cancel, err := c.addWatcher(loadVerdict)
+	if err != nil {
+		return err
+	}
+	defer cancel()
 
 	raw, err := c.request(ctx, app.TransportID, nsMedia, map[string]any{
 		"type":      "LOAD",
@@ -150,7 +152,7 @@ func (c *Conn) Load(ctx context.Context, app App, m Media) error {
 	// stream. Treating that first reply as the answer reports every failed
 	// cast as a success -- which it did, for four rounds of testing against
 	// hardware, while the television sat on its home screen.
-	if err := <-verdict; err != nil {
+	if err := waitForVerdict(ctx); err != nil {
 		return fmt.Errorf("%w. The receiver must be able to reach %s and to play %s",
 			err, m.URL, m.ContentType)
 	}

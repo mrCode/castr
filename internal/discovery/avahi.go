@@ -98,7 +98,7 @@ func Parse(output, protocol string) []Device {
 			continue
 		}
 		port, err := strconv.Atoi(f[8])
-		if err != nil {
+		if err != nil || port < 1 || port > 65535 {
 			continue
 		}
 
@@ -125,11 +125,11 @@ func Parse(output, protocol string) []Device {
 
 		d := Device{
 			ID:       protocol + ":" + unique,
-			Name:     name,
+			Name:     sanitize(name),
 			Address:  address,
 			Port:     port,
 			Protocol: protocol,
-			Model:    model,
+			Model:    sanitize(model),
 		}
 		if _, dup := seen[d.ID]; !dup {
 			order = append(order, d.ID)
@@ -142,6 +142,38 @@ func Parse(output, protocol string) []Device {
 		devices = append(devices, seen[id])
 	}
 	return devices
+}
+
+// maxNameLength keeps one receiver from filling the menu.
+const maxNameLength = 64
+
+// sanitize strips control characters from a name the network supplied.
+//
+// A receiver's name is an unauthenticated mDNS TXT record, and Unescape
+// decodes avahi's \NNN for any byte -- including \010, a newline. That
+// matters because the menu joins its entries with newlines before handing them
+// to the picker: a name containing one adds LINES to the menu, letting whoever
+// advertised it forge the trailing "[id]" that the selection is parsed back
+// out of, or synthesise entries like "Stop casting (...)". A leading dash is
+// removed for the same class of reason -- entries are passed as arguments to
+// the menu program, where a leading dash reads as an option.
+//
+// Spoofing a plausible display name needs none of this and cannot be
+// prevented; what this removes is control over the rest of the line.
+func sanitize(name string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, name)
+
+	cleaned = strings.TrimSpace(cleaned)
+	cleaned = strings.TrimLeft(cleaned, "-")
+	if len(cleaned) > maxNameLength {
+		cleaned = cleaned[:maxNameLength]
+	}
+	return strings.TrimSpace(cleaned)
 }
 
 func isIPv4(address string) bool {

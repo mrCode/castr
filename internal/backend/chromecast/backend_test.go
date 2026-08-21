@@ -62,28 +62,67 @@ func (f *fakeServer) Stats() (int64, int, int)  { return 0, 0, 0 }
 func (f *fakeServer) Close() error              { f.closed = true; return nil }
 
 type fakeCaster struct {
-	loaded  string
-	stopped bool
-	closed  bool
-	loadErr error
+	mu         sync.Mutex
+	loaded     string
+	stopped    bool
+	closed     bool
+	loadErr    error
+	beforeLoad func()
 }
 
 func (f *fakeCaster) Launch(context.Context, string) (App, error) {
 	return App{SessionID: "s", TransportID: "t", AppID: DefaultMediaReceiver}, nil
 }
 func (f *fakeCaster) Load(_ context.Context, _ App, url, _, _ string) error {
+	if f.beforeLoad != nil {
+		f.beforeLoad()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.loadErr != nil {
 		return f.loadErr
 	}
 	f.loaded = url
 	return nil
 }
-func (f *fakeCaster) StopApp(context.Context, App) error { f.stopped = true; return nil }
-func (f *fakeCaster) Close() error                       { f.closed = true; return nil }
 
-type fakeGraph struct{ sources []capture.Node }
+func (f *fakeCaster) loadedURL() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.loaded
+}
+func (f *fakeCaster) StopApp(context.Context, App) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = true
+	return nil
+}
 
-func (f *fakeGraph) SourcesFeeding(int) ([]capture.Node, error) { return f.sources, nil }
+func (f *fakeCaster) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = true
+	return nil
+}
+
+// fakeGraph is safe for concurrent use because the running cast re-reads it on
+// its own goroutine while a test changes what it reports.
+type fakeGraph struct {
+	mu      sync.Mutex
+	sources []capture.Node
+}
+
+func (f *fakeGraph) SourcesFeeding(int) ([]capture.Node, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sources, nil
+}
+
+func (f *fakeGraph) becomes(sources ...capture.Node) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sources = sources
+}
 
 // harness wires a backend to fakes and records what happened in what order.
 type harness struct {
@@ -92,6 +131,8 @@ type harness struct {
 	pipeline *fakePipeline
 	server   *fakeServer
 	caster   *fakeCaster
+
+	graph *fakeGraph
 
 	mu     sync.Mutex
 	order  []string
@@ -121,6 +162,7 @@ func newHarness(t *testing.T, sources []capture.Node) *harness {
 		h.mu.Unlock()
 	}
 
+	h.graph = &fakeGraph{sources: sources}
 	h.backend = &Backend{
 		Config: Config{FPS: 30, Encoder: "x264enc", Port: 8010, StartTimeout: 2 * time.Second},
 		OpenPortal: func(context.Context) (Portal, error) {
@@ -128,7 +170,7 @@ func newHarness(t *testing.T, sources []capture.Node) *harness {
 			return h.portal, nil
 		},
 		SerialOf: func(uint32) (uint32, error) { return 4617, nil },
-		Graph:    &fakeGraph{sources: sources},
+		Graph:    h.graph,
 		StartCapture: func(capture.Options) (Pipeline, error) {
 			record("capture")
 			return h.pipeline, nil
@@ -173,11 +215,11 @@ func TestStartCastsTheGrantedScreen(t *testing.T) {
 	if err := h.backend.Start(context.Background(), tv, "mirror"); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if h.caster.loaded == "" {
+	if h.caster.loadedURL() == "" {
 		t.Fatal("the receiver was never given a URL")
 	}
-	if !strings.HasSuffix(h.caster.loaded, capture.PlaylistName) {
-		t.Errorf("loaded %q, want the playlist", h.caster.loaded)
+	if !strings.HasSuffix(h.caster.loadedURL(), capture.PlaylistName) {
+		t.Errorf("loaded %q, want the playlist", h.caster.loadedURL())
 	}
 	want := []session.State{session.Connecting, session.Streaming}
 	if got := h.reported(); len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
@@ -194,7 +236,7 @@ func TestACaptureThatIsNotTheScreenIsNeverServed(t *testing.T) {
 	if !errors.Is(err, capture.ErrWrongSource) {
 		t.Fatalf("Start returned %v, want ErrWrongSource", err)
 	}
-	if h.caster.loaded != "" {
+	if h.caster.loadedURL() != "" {
 		t.Fatal("a receiver was given a URL for a capture that was not the screen")
 	}
 	for _, step := range h.seen() {
@@ -243,15 +285,15 @@ func TestStopEndsTheCastAndReleasesEverything(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	if !h.caster.stopped {
+	if !h.caster.wasStopped() {
 		t.Error("the receiver was left showing the app")
 	}
 	if h.pipeline.terminations() == 0 {
 		t.Error("the capture was left running")
 	}
-	if !h.server.closed || !h.portal.closed || !h.caster.closed {
+	if !h.server.closed || !h.portal.closed || !h.caster.isClosed() {
 		t.Errorf("something was left open: server=%v portal=%v caster=%v",
-			h.server.closed, h.portal.closed, h.caster.closed)
+			h.server.closed, h.portal.closed, h.caster.isClosed())
 	}
 
 	// Stopping is announced before the work. Without it a stop that takes a
@@ -317,4 +359,199 @@ func TestASecondCastToTheSameReceiverIsRefused(t *testing.T) {
 	if err := h.backend.Start(context.Background(), tv, "mirror"); err == nil {
 		t.Fatal("a second cast to the same receiver was allowed")
 	}
+}
+
+// Starting a cast can take minutes, nearly all of it spent waiting for the
+// user to answer the share prompt. A stop arriving in that window must leave
+// nothing running.
+//
+// Before this was fixed, the stop tore down a session record that had not been
+// filled in yet, and the start then went on to bring up a capture, an HTTP
+// server serving the screen to the network, and a session on the television --
+// none of which anything was tracking, and a second stop was a no-op. The user
+// had pressed stop and their screen was still being broadcast.
+func TestStoppingDuringTheSharePromptLeavesNothingRunning(t *testing.T) {
+	h := newHarness(t, []capture.Node{screen})
+
+	atPrompt := make(chan struct{})
+	release := make(chan struct{})
+	h.backend.OpenPortal = func(context.Context) (Portal, error) {
+		close(atPrompt)
+		<-release // the user is staring at "Select what to share"
+		return h.portal, nil
+	}
+
+	started := make(chan error, 1)
+	go func() { started <- h.backend.Start(context.Background(), tv, "mirror") }()
+
+	<-atPrompt
+	if err := h.backend.Stop(context.Background(), tv); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	close(release)
+
+	if err := <-started; err != nil {
+		t.Fatalf("Start reported %v; a cancelled start is not a failure", err)
+	}
+
+	if h.caster.loadedURL() != "" {
+		t.Error("a receiver was given a URL for a cast the user had already stopped")
+	}
+	// Whatever got as far as being created must have been released. Some
+	// steps never run at all when the stop lands early, and demanding that a
+	// resource which was never created be closed would test the timing rather
+	// than the rule.
+	h.assertNothingLeftRunning(t)
+
+	h.backend.mu.Lock()
+	tracked := len(h.backend.sessions)
+	h.backend.mu.Unlock()
+	if tracked != 0 {
+		t.Errorf("%d sessions still tracked", tracked)
+	}
+}
+
+// The same window, one step later: stopped after the capture is running but
+// before the television is dialled.
+func TestStoppingBeforeTheReceiverIsDialledLeavesNothingRunning(t *testing.T) {
+	h := newHarness(t, []capture.Node{screen})
+
+	atDial := make(chan struct{})
+	release := make(chan struct{})
+	h.backend.Dial = func(context.Context, string) (Caster, error) {
+		close(atDial)
+		<-release
+		return h.caster, nil
+	}
+
+	started := make(chan error, 1)
+	go func() { started <- h.backend.Start(context.Background(), tv, "mirror") }()
+
+	<-atDial
+	if err := h.backend.Stop(context.Background(), tv); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	close(release)
+	<-started
+
+	if h.caster.loadedURL() != "" {
+		t.Error("a receiver was given a URL after the user pressed stop")
+	}
+	h.assertNothingLeftRunning(t)
+
+	// This one got far enough that both really were created, so "released"
+	// here means the stop actually reached them.
+	if h.pipeline.terminations() == 0 {
+		t.Error("the capture was left running")
+	}
+	if !h.server.closed {
+		t.Error("the HTTP server was left serving the screen to the network")
+	}
+}
+
+// The last step has no adoption after it, so only the final check catches a
+// stop that lands here -- while the television is being told what to play.
+func TestStoppingDuringTheFinalStepLeavesNothingRunning(t *testing.T) {
+	h := newHarness(t, []capture.Node{screen})
+
+	atLoad := make(chan struct{})
+	release := make(chan struct{})
+	h.caster.beforeLoad = func() {
+		close(atLoad)
+		<-release
+	}
+
+	started := make(chan error, 1)
+	go func() { started <- h.backend.Start(context.Background(), tv, "mirror") }()
+
+	<-atLoad
+	stopped := make(chan error, 1)
+	go func() { stopped <- h.backend.Stop(context.Background(), tv) }()
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+
+	<-started
+	if err := <-stopped; err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	h.assertNothingLeftRunning(t)
+
+	h.backend.mu.Lock()
+	tracked := len(h.backend.sessions)
+	h.backend.mu.Unlock()
+	if tracked != 0 {
+		t.Errorf("%d sessions still tracked after a stop", tracked)
+	}
+	// The capture must not survive: the user pressed stop, and the screen is
+	// still being encoded until something terminates it.
+	if h.pipeline.terminations() == 0 {
+		t.Error("the capture was left running after the user pressed stop")
+	}
+}
+
+func (f *fakeCaster) wasStopped() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stopped
+}
+
+func (f *fakeCaster) isClosed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
+}
+
+// assertNothingLeftRunning checks that every resource the start actually
+// created was released.
+func (h *harness) assertNothingLeftRunning(t *testing.T) {
+	t.Helper()
+	created := map[string]bool{}
+	for _, step := range h.seen() {
+		created[step] = true
+	}
+
+	if created["portal"] && !h.portal.closed {
+		t.Error("the screen-capture grant was left open")
+	}
+	if created["capture"] && h.pipeline.terminations() == 0 {
+		t.Error("the capture was left running")
+	}
+	if created["serve"] && !h.server.closed {
+		t.Error("the HTTP server was left serving the screen to the network")
+	}
+	if created["dial"] && !h.caster.isClosed() {
+		t.Error("the connection to the receiver was left open")
+	}
+}
+
+// The granted node can go away underneath a running pipeline -- pipewire
+// restarting on an upgrade, the grant revoked, a monitor unplugged -- and the
+// source has autoconnect on because no configuration of it fails safe. So a
+// cast that has been running for an hour must still be proving what it sends.
+func TestACastThatChangesToACameraIsTornDownWhileRunning(t *testing.T) {
+	h := newHarness(t, []capture.Node{screen})
+
+	if err := h.backend.Start(context.Background(), tv, "mirror"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// The graph changes underneath the running cast.
+	h.graph.becomes(webcam)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		got := h.reported()
+		if len(got) > 0 && got[len(got)-1] == session.Failed {
+			if h.pipeline.terminations() == 0 {
+				t.Error("the substituted capture was left running")
+			}
+			if !h.server.closed {
+				t.Error("the substituted capture was left served to the network")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("a cast that switched to the webcam kept running")
 }

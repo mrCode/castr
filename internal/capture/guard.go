@@ -61,6 +61,13 @@ func (g *Guard) Verify(ctx context.Context, pid int) error {
 		sleep = time.Sleep
 	}
 
+	// Node 0 is what an unreadable link reports, so accepting it as "granted"
+	// would make an unidentifiable source pass the check that exists to
+	// identify sources.
+	if g.Granted == 0 {
+		return fmt.Errorf("%w: castr was not told which node it may capture", ErrWrongSource)
+	}
+
 	deadline := time.Now().Add(timeout)
 	for {
 		sources, err := g.Graph.SourcesFeeding(pid)
@@ -100,4 +107,27 @@ func (g *Guard) wrongSources(sources []Node) []string {
 		}
 	}
 	return wrong
+}
+
+// Recheck takes a single sample and reports only a source that is not the
+// granted one.
+//
+// Verify answers "has this started correctly". Recheck answers "is it still
+// what it was", which is a different question and needs a different answer to
+// an empty graph: a momentarily missing link mid-session is not evidence of a
+// substitution, and tearing a cast down for one would make the guard the most
+// common cause of failure rather than a defence. A capture that has genuinely
+// stopped is caught by the pipeline exiting.
+func (g *Guard) Recheck(pid int) error {
+	sources, err := g.Graph.SourcesFeeding(pid)
+	if err != nil {
+		// Unreadable is not proof of wrongdoing, and Verify already
+		// established what this pipeline was capturing.
+		return nil
+	}
+	if wrong := g.wrongSources(sources); len(wrong) > 0 {
+		return fmt.Errorf("%w: it changed to %s",
+			ErrWrongSource, strings.Join(wrong, ", "))
+	}
+	return nil
 }
