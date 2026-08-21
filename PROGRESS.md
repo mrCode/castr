@@ -6,6 +6,15 @@
 > [issue #934](https://github.com/HANCORE-linux/omarchy-plugin-marketplace/issues/934):
 > `validated`, one human security review away.
 >
+> **A reviewer found a real bug (2026-08-21).** @ryanrhughes reported that
+> receiver-controlled text rendered through QML's `AutoText`. Reproduced before
+> fixing: a receiver named `<b>PWNED</b> receiver` rendered in bold, so
+> `<img src="http://attacker/x">` would have made the widget fetch that URL —
+> names come from `avahi-browse`, so anything on the network picks the string.
+> Fixed at plugin `7ba50de`: every `Text` is `Text.PlainText`, and names are
+> stripped before reaching the shell's tooltip, which renders through a `Text`
+> the plugin does not own. `needs-fixes` cleared.
+>
 > **The listing's security baseline** reports `findings: []` and one capability,
 > `package-manager`, from `yay -S castr doubletake-git` in the README and in the
 > panel's "castr is not installed" message. That is deliberate and was explained
