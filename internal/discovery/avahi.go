@@ -26,10 +26,20 @@ type Device struct {
 }
 
 const (
-	ProtocolAirPlay = "airplay"
+	ProtocolAirPlay    = "airplay"
+	ProtocolChromecast = "chromecast"
 
-	airplayService = "_airplay._tcp"
+	airplayService    = "_airplay._tcp"
+	googlecastService = "_googlecast._tcp"
 )
+
+// serviceFor is the mDNS service a protocol advertises under.
+func serviceFor(protocol string) string {
+	if protocol == ProtocolChromecast {
+		return googlecastService
+	}
+	return airplayService
+}
 
 // Runner executes a command and returns its stdout. Injected so no test ever
 // shells out: the real implementation lives in main.
@@ -94,17 +104,32 @@ func Parse(output, protocol string) []Device {
 
 		txt := f[9]
 		unique := txtValue(txt, "deviceid")
+		if protocol == ProtocolChromecast {
+			// A Chromecast has no deviceid; it publishes id=<32 hex chars>.
+			unique = txtValue(txt, "id")
+		}
 		if unique == "" {
 			unique = address
 		}
 
+		name, model := Unescape(f[3]), txtValue(txt, "model")
+		if protocol == ProtocolChromecast {
+			// The service instance name is the hardware id --
+			// "MiTV-AESP0-8a308a938ce275d9173a777e6003aa07". What the user
+			// named the television is in the TXT record as fn.
+			if friendly := txtValue(txt, "fn"); friendly != "" {
+				name = friendly
+			}
+			model = txtValue(txt, "md")
+		}
+
 		d := Device{
 			ID:       protocol + ":" + unique,
-			Name:     Unescape(f[3]),
+			Name:     name,
 			Address:  address,
 			Port:     port,
 			Protocol: protocol,
-			Model:    txtValue(txt, "model"),
+			Model:    model,
 		}
 		if _, dup := seen[d.ID]; !dup {
 			order = append(order, d.ID)
@@ -139,9 +164,33 @@ func txtValue(txt, key string) string {
 
 // Browse asks avahi for receivers of the given protocol.
 func Browse(run Runner, protocol string) ([]Device, error) {
-	out, err := run("avahi-browse", "-rtp", airplayService)
+	out, err := run("avahi-browse", "-rtp", serviceFor(protocol))
 	if err != nil {
 		return nil, fmt.Errorf("avahi-browse: %w", err)
 	}
 	return Parse(out, protocol), nil
+}
+
+// BrowseAll asks for every protocol castr can cast to.
+//
+// One protocol failing does not hide the other: a machine with no Chromecast
+// on the network should still list its Apple TVs, and the reverse. The error
+// is returned only when nothing could be browsed at all.
+func BrowseAll(run Runner) ([]Device, error) {
+	var devices []Device
+	var failures []string
+
+	for _, protocol := range []string{ProtocolAirPlay, ProtocolChromecast} {
+		found, err := Browse(run, protocol)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", protocol, err))
+			continue
+		}
+		devices = append(devices, found...)
+	}
+
+	if len(failures) == 2 {
+		return nil, fmt.Errorf("browsing for receivers: %s", strings.Join(failures, "; "))
+	}
+	return devices, nil
 }

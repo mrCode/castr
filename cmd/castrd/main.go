@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/mrCode/castr/internal/backend/airplay"
+	"github.com/mrCode/castr/internal/backend/chromecast"
 	"github.com/mrCode/castr/internal/config"
 	"github.com/mrCode/castr/internal/daemon"
 	"github.com/mrCode/castr/internal/discovery"
@@ -116,9 +117,11 @@ func run(idleTimeout time.Duration, verbose bool) error {
 
 	notifier := notify.Notifier{Run: runNotify}
 	backend := newAirPlayBackend(cfg, stateDir)
+	castBackend := newChromecastBackend(cfg)
 
 	d := daemon.New(registry, map[string]daemon.Backend{
-		discovery.ProtocolAirPlay: backend,
+		discovery.ProtocolAirPlay:    backend,
+		discovery.ProtocolChromecast: castBackend,
 	})
 	d.IdleTimeout = idleTimeout
 	d.Notify = func(device discovery.Device, state session.State, reason string) {
@@ -126,6 +129,7 @@ func run(idleTimeout time.Duration, verbose bool) error {
 		notifier.OnState(device, state, reason)
 	}
 	backend.Emit = d.OnState
+	castBackend.Emit = d.OnState
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -213,11 +217,54 @@ func hyprctl(name string, args ...string) (string, error) {
 // takes seconds. A cold browser is why `list` came back empty and `start` said
 // "device not found" for receivers plainly present.
 func browse() ([]discovery.Device, error) {
-	return discovery.Browse(hyprctl, discovery.ProtocolAirPlay)
+	return discovery.BrowseAll(hyprctl)
 }
 
 func runNotify(argv []string) error {
 	return exec.Command(argv[0], argv[1:]...).Run()
+}
+
+// newChromecastBackend wires the Cast backend up to the real system.
+//
+// It takes no state directory: a Chromecast needs no pairing keys, so there is
+// nothing about a receiver worth keeping between casts.
+func newChromecastBackend(cfg config.Config) *chromecast.Backend {
+	return chromecast.NewLive(chromecast.Config{
+		FPS:            cfg.Capture.FPS,
+		Encoder:        gstEncoder(cfg.Capture.Encoder),
+		Bitrate:        cfg.Chromecast.Bitrate,
+		Width:          cfg.Chromecast.Width,
+		Height:         cfg.Chromecast.Height,
+		Port:           cfg.Chromecast.Port,
+		SegmentSeconds: cfg.Chromecast.SegmentSeconds,
+	}, nil)
+}
+
+// gstEncoder turns castr's encoder name into a GStreamer element.
+//
+// "auto" resolves to VA-API, then NVENC, then x264. The order is not a
+// preference between vendors: a hardware encoder leaves the CPU free for the
+// scaling and the HTTP server, which run in this process rather than in
+// doubletake.
+func gstEncoder(name string) string {
+	switch name {
+	case "vaapi":
+		return "vah264enc"
+	case "nvenc":
+		return "nvh264enc"
+	case "x264":
+		return "x264enc"
+	}
+	for _, element := range []string{"vah264enc", "nvh264enc"} {
+		if gstHasElement(element) {
+			return element
+		}
+	}
+	return "x264enc"
+}
+
+func gstHasElement(name string) bool {
+	return exec.Command("gst-inspect-1.0", name).Run() == nil
 }
 
 // newAirPlayBackend wires doubletake up to the real system.

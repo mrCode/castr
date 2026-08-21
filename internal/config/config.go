@@ -73,16 +73,51 @@ type AirPlay struct {
 	Audio bool `toml:"audio"`
 }
 
+// Chromecast holds the settings for casting to a Chromecast.
+//
+// Unlike AirPlay, castr captures and serves this stream itself, so these
+// settings describe castr's own behaviour rather than another program's.
+type Chromecast struct {
+	// Port is where the receiver fetches the stream FROM this machine. It is
+	// fixed rather than ephemeral for the same reason as AirPlay's range: a
+	// firewall rule has to name it before the first cast.
+	Port int `toml:"port"`
+
+	// Width and Height scale the capture before encoding.
+	//
+	// Not a bandwidth setting: a receiver's decoder has limits, and a stream
+	// above them is refused outright with no useful error. A 2560x1600 capture
+	// was refused by a Xiaomi stick that played the same pipeline at 1280x800.
+	Width  int `toml:"width"`
+	Height int `toml:"height"`
+
+	// SegmentSeconds is the length of one HLS segment, and the floor on how
+	// far behind the television runs. Shorter is more responsive and more
+	// requests; below one second receivers start to stutter.
+	SegmentSeconds int `toml:"segment_seconds"`
+
+	// Bitrate in kbit/s, 0 for the encoder's default.
+	Bitrate int `toml:"bitrate"`
+}
+
 // Config is everything castr reads from disk.
 type Config struct {
-	Capture Capture `toml:"capture"`
-	AirPlay AirPlay `toml:"airplay"`
+	Capture    Capture    `toml:"capture"`
+	AirPlay    AirPlay    `toml:"airplay"`
+	Chromecast Chromecast `toml:"chromecast"`
 }
 
 // Default returns the configuration castr uses with no file present.
 func Default() Config {
 	return Config{
 		Capture: Capture{FPS: 30, Encoder: "auto"},
+		Chromecast: Chromecast{
+			Port:           8010,
+			Width:          1280,
+			Height:         800,
+			SegmentSeconds: 1,
+			Bitrate:        4000,
+		},
 		AirPlay: AirPlay{
 			PortRange:       "60000-60010",
 			Bitrate:         0,
@@ -194,6 +229,23 @@ func (c Config) Validate() error {
 	}
 	if c.AirPlay.Bitrate < 0 {
 		return fmt.Errorf("bitrate cannot be negative, got %d", c.AirPlay.Bitrate)
+	}
+	if c.Chromecast.Port < 1 || c.Chromecast.Port > 65535 {
+		return fmt.Errorf("chromecast port %d is outside 1-65535", c.Chromecast.Port)
+	}
+	if c.Chromecast.SegmentSeconds < 1 {
+		return fmt.Errorf("segment_seconds must be at least 1, got %d",
+			c.Chromecast.SegmentSeconds)
+	}
+	if (c.Chromecast.Width > 0) != (c.Chromecast.Height > 0) {
+		return errors.New("chromecast width and height must be set together")
+	}
+	if c.Chromecast.Width < 0 || c.Chromecast.Height < 0 {
+		return errors.New("chromecast width and height cannot be negative")
+	}
+	if c.Chromecast.Bitrate < 0 {
+		return fmt.Errorf("chromecast bitrate cannot be negative, got %d",
+			c.Chromecast.Bitrate)
 	}
 	return nil
 }

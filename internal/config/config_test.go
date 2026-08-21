@@ -74,6 +74,9 @@ audio = false
 		Capture: Capture{FPS: 50, Encoder: "vaapi"},
 		AirPlay: AirPlay{PortRange: "50000-50020", Bitrate: 8000, Code: "1234",
 			HideVAPostproc: false, ReadyTimeout: 90, TargetLatencyMS: 90, Audio: false},
+		// Untouched by this file, so it keeps the defaults: settings are
+		// decoded ONTO them, not into a zero struct.
+		Chromecast: Default().Chromecast,
 	}
 	if cfg != want {
 		t.Errorf("cfg  = %+v\nwant = %+v", cfg, want)
@@ -231,5 +234,29 @@ func TestTheDefaultAndZeroAreBothAccepted(t *testing.T) {
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("target_latency_ms = %d rejected: %v", v, err)
 		}
+	}
+}
+
+func TestChromecastDefaultsAreUsable(t *testing.T) {
+	cfg := Default()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("the defaults do not validate: %v", err)
+	}
+	if cfg.Chromecast.Port == 0 {
+		t.Error("no default port; a firewall rule cannot be written for a port nobody knows")
+	}
+	// A receiver refuses a stream above its decoder's limits with no useful
+	// error, so the default must be a size receivers actually accept.
+	if cfg.Chromecast.Width > 1920 || cfg.Chromecast.Height > 1080 {
+		t.Errorf("default capture is %dx%d, larger than receivers reliably decode",
+			cfg.Chromecast.Width, cfg.Chromecast.Height)
+	}
+}
+
+func TestChromecastSizeMustBeSetAsAPair(t *testing.T) {
+	cfg := Default()
+	cfg.Chromecast.Height = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("a width with no height was accepted; the capsfilter would be malformed")
 	}
 }

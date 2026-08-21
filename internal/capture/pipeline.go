@@ -256,3 +256,6 @@ func (o Options) Command(name string) (*exec.Cmd, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return cmd, nil
 }
+
+// HLSContentType is what a receiver must be told to expect for an HLS stream.
+const HLSContentType = "application/vnd.apple.mpegurl"
