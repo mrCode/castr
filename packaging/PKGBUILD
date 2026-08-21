@@ -45,7 +45,7 @@ options=('!debug')
 install="${pkgname}.install"
 
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('fd99250e304dfff0e596d2fe94399061297507423cc1812d1b1f2240cabd3e51')
+sha256sums=('2c293ba5e69866a5c36016a2f3097887b9a92cdb6a84e70049dd094269feba8f')
 
 build() {
   cd "${srcdir}/${pkgname}-${pkgver}"
