@@ -264,3 +264,28 @@ func TestTooltipsCarryingReceiverNamesAreNeutered(t *testing.T) {
 		}
 	}
 }
+
+// The panel chooses one mode for every receiver in the list, so a Chromecast
+// clicked while "Extend" is selected would start a cast that cannot work.
+// Extend needs a virtual output the Chromecast backend does not build.
+func TestTheWidgetNeverStartsAnExtendCastOnAChromecast(t *testing.T) {
+	source := repoFile(t, "share/quickshell/castr-indicator/Widget.qml")
+
+	if !strings.Contains(source, `function modeFor(device)`) {
+		t.Fatal("the widget has no per-device mode; the pill applies to every receiver")
+	}
+	if !strings.Contains(source, `device.protocol === "chromecast" ? "mirror" : root.mode`) {
+		t.Error("modeFor does not force mirror for a Chromecast")
+	}
+	// The command that actually runs must use the per-device mode, not the pill.
+	if strings.Contains(source, `"castr", "start", device.id, root.mode]`) {
+		t.Error("startCast passes the panel's mode rather than the receiver's")
+	}
+	if !strings.Contains(source, `root.modeFor(device)]`) {
+		t.Error("startCast does not use modeFor")
+	}
+	// And the row has to say so, rather than quietly doing something else.
+	if !strings.Contains(source, "Mirror only") {
+		t.Error("a Chromecast row does not say it will mirror regardless of the pill")
+	}
+}
