@@ -1,13 +1,14 @@
 # castr
 
-Mirror your Hyprland desktop to an Apple TV — or extend onto it as a second
-monitor — from your desktop's menu, with a bar indicator.
+Mirror your Hyprland desktop to an Apple TV or a Chromecast — or extend onto an
+Apple TV as a second monitor — from your desktop's menu, with a bar indicator.
 
 Two small static binaries -- a client and a daemon. `avahi` for discovery, `doubletake` for AirPlay,
 `hyprctl` for outputs; nothing else at runtime.
 
 > **Status: released, verified on hardware.** v0.1.0 is on the AUR. Mirror and
-> extend have both been cast to a real Apple TV — picture confirmed, capture
+> extend have both been cast to a real Apple TV, and mirror to a real
+> Chromecast (a Xiaomi TV Stick, a minute of unbroken playback) — picture confirmed, capture
 > traced to the screen-share portal rather than a camera, the panel left at its
 > own refresh rate, and a nine-minute mirror session held at a steady rate.
 
@@ -99,6 +100,13 @@ state. Left-click opens the menu, right-click stops.
 fps = 30
 encoder = "auto"            # auto | vaapi | nvenc | x264
 
+[chromecast]
+port = 8010                 # the receiver fetches the stream from this port
+width = 1280                # scaled before encoding; a receiver REFUSES a
+height = 800                # stream above what its decoder handles
+segment_seconds = 1         # the floor on how far behind the television runs
+bitrate = 4000
+
 [airplay]
 port_range = "60000-60010"  # the receiver connects back into these
 target_latency_ms = 100     # NOT just a responsiveness knob: below ~80 a
@@ -135,12 +143,46 @@ rewrite must not lose"* — every bug the Python version already shipped and
 fixed, restated as a required test so this one does not rediscover them.
 [PROGRESS.md](PROGRESS.md) tracks which of those are closed.
 
-## Not supported
+## Chromecast
 
-**Chromecast.** omarchy-cast has a Chromecast backend that reached "streaming
-with data flowing" on real hardware and is nonetheless disabled: its capture
-path was observed sending the *webcam* instead of the screen. castr does not
-carry it forward until that is understood.
+```bash
+castr list                 # Chromecasts appear alongside Apple TVs
+castr start chromecast:<id>
+```
+
+Mirror only — extend is AirPlay-only for now.
+
+A Chromecast works the other way round from AirPlay: castr captures the screen,
+serves it as HLS over HTTP, and tells the television where to fetch it. So the
+receiver has to be able to reach **this machine** on port 8010:
+
+```bash
+sudo ufw allow from <your-subnet> to any port 8010 proto tcp
+```
+
+Expect one to three seconds of delay. That is the segment length, not the
+network: a live HLS receiver will not start until it has a few seconds of video
+in hand, and `segment_seconds` is the floor.
+
+The capture is scaled to 1280x800 by default. This is a decoder limit rather
+than a bandwidth choice — a receiver refuses a stream above what it can decode,
+with no useful error. Raise it in the config if your receiver copes.
+
+**About the webcam bug.** omarchy-cast's Chromecast backend was disabled
+because it was observed streaming the user's camera to a television while
+reporting that it was mirroring the screen. That is now understood, reproduced,
+and fixed — `pipewiresrc`'s `target-object` matches a node *name or serial*,
+not a node id, so the source never bound and GStreamer fell back to the default
+video device. The cause and the measurements are in
+[docs/capture-safety.md](docs/capture-safety.md).
+
+No source configuration fails safe, so castr does not rely on one: it reads the
+PipeWire graph and confirms the pipeline is capturing the node the portal
+granted **before the stream is reachable from the network**. A capture it
+cannot identify is torn down and never cast.
+
+[docs/chromecast.md](docs/chromecast.md) records the seven things a receiver
+requires, six of which fail silently.
 
 ## License
 
