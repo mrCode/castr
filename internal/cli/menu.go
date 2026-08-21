@@ -60,7 +60,7 @@ func (a *App) menu() int {
 		return a.fail(fmt.Sprintf("could not tell which receiver %q means", choice))
 	}
 
-	mode, err := a.pickMode()
+	mode, err := a.pickMode(protocolOf(deviceID))
 	if err != nil {
 		return a.fail(err.Error())
 	}
@@ -71,9 +71,15 @@ func (a *App) menu() int {
 	return a.run(func() error { return a.Client.Start(deviceID, mode) })
 }
 
-// pickMode asks mirror or extend, returning "" if the user cancelled.
-func (a *App) pickMode() (string, error) {
-	choice, err := a.Picker.Pick("Mode", ui.ModeEntries)
+// protocolOf reads the protocol out of a device id, which is "<protocol>:<id>".
+func protocolOf(deviceID string) string {
+	protocol, _, _ := strings.Cut(deviceID, ":")
+	return protocol
+}
+
+// pickMode asks which mode, returning "" if the user cancelled.
+func (a *App) pickMode(protocol string) (string, error) {
+	choice, err := a.Picker.Pick("Mode", ui.ModeEntriesFor(protocol))
 	if err != nil {
 		return "", err
 	}

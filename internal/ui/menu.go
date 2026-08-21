@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mrCode/castr/internal/discovery"
+
 	"github.com/mrCode/castr/internal/daemon"
 	"github.com/mrCode/castr/internal/session"
 )
@@ -35,6 +37,20 @@ const (
 
 // ModeEntries is the second prompt, after a receiver is chosen.
 var ModeEntries = []string{MirrorEntry, ExtendEntry}
+
+// ModeEntriesFor is the mode prompt for one receiver.
+//
+// A Chromecast is offered mirror only. Extend needs a virtual output whose
+// contents castr captures and hands to the receiver, and the Chromecast path
+// has not been built for that -- so offering it would present a choice that
+// can only end in a failure notification. A menu that lists what cannot work
+// is worse than a shorter menu.
+func ModeEntriesFor(protocol string) []string {
+	if protocol == discovery.ProtocolChromecast {
+		return []string{MirrorEntry}
+	}
+	return ModeEntries
+}
 
 // ParseMode reads a mode back out of a chosen line, "" if it is neither.
 func ParseMode(line string) string {
