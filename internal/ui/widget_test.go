@@ -192,3 +192,75 @@ func TestTheWidgetSaysWhenCastrIsNotInstalled(t *testing.T) {
 		t.Error("the message does not say how to install it")
 	}
 }
+
+func TestReceiverTextIsNeverRenderedAsRichText(t *testing.T) {
+	// Receiver names, models and addresses come from mDNS — from anything on
+	// the network that cares to advertise. QML's default textFormat is
+	// AutoText, which sniffs for rich text, so a receiver advertising itself as
+	// `<img src="http://attacker/x">` would make the widget FETCH that URL.
+	//
+	// Not hypothetical: a name of `<b>PWNED</b>` rendered in bold before this
+	// was fixed. Reported by @ryanrhughes against commit eb22e2c.
+	//
+	// The rule is every Text, not only the ones carrying remote data today, so
+	// a Text added later is safe by default rather than by review.
+	qml := repoFile(t, "share/quickshell/castr-indicator/Widget.qml")
+	lines := strings.Split(qml, "\n")
+
+	opener := regexp.MustCompile(`^(\s*)([A-Z][A-Za-z]*)\s*\{`)
+	textProp := regexp.MustCompile(`^(\s*)text:`)
+
+	for i, line := range lines {
+		m := textProp.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		// Which component owns this property? Only a Text renders markup.
+		owner := ""
+		for j := i - 1; j >= 0; j-- {
+			if o := opener.FindStringSubmatch(lines[j]); o != nil && len(o[1]) < len(m[1]) {
+				owner = o[2]
+				break
+			}
+		}
+		if owner != "Text" && owner != "PanelSectionHeader" {
+			continue // e.g. BarIconButton, whose text is our own icon glyph
+		}
+
+		guarded := false
+		for j := i + 1; j < len(lines) && j <= i+6; j++ {
+			if strings.Contains(lines[j], "textFormat: Text.PlainText") {
+				guarded = true
+				break
+			}
+			trimmed := strings.TrimSpace(lines[j])
+			if trimmed != "" && !strings.HasPrefix(trimmed, ":") &&
+				!strings.HasPrefix(trimmed, "+") && !strings.HasPrefix(trimmed, "?") {
+				break
+			}
+		}
+		if !guarded {
+			t.Errorf("%s at line %d has an unguarded text:, which defaults to AutoText:\n  %s",
+				owner, i+1, strings.TrimSpace(line))
+		}
+	}
+}
+
+func TestTooltipsCarryingReceiverNamesAreNeutered(t *testing.T) {
+	// Tooltips do not render through a Text this file owns: the shell's
+	// PanelToolTip has its own bare Text, which defaults to AutoText. Anything
+	// receiver-controlled must be stripped before it leaves here.
+	qml := repoFile(t, "share/quickshell/castr-indicator/Widget.qml")
+
+	if !strings.Contains(qml, "function plain(") {
+		t.Fatal("no plain() helper; receiver text reaches shell tooltips raw")
+	}
+	for _, carrier := range []string{"root.tooltip", "modelData.name"} {
+		for _, line := range strings.Split(qml, "\n") {
+			if strings.Contains(line, "tooltipText") && strings.Contains(line, carrier) &&
+				!strings.Contains(line, "plain(") {
+				t.Errorf("tooltip passes %s unneutered:\n  %s", carrier, strings.TrimSpace(line))
+			}
+		}
+	}
+}
