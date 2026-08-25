@@ -1,4 +1,13 @@
-# castr — port progress
+# castr
+
+> **NEXT: confirm a picture on the Chromecast.** v0.2.0 is published (GitHub
+> tag, AUR, plugin) and the Chromecast path was verified on a Xiaomi stick --
+> but that run predates the security fixes, which changed the stream URL to
+> carry a random path prefix and restricted the server to the receiver's
+> address. `castr start chromecast:<id> mirror`, and look at the television.
+> If it fails, suspect `prefix` and `AllowFrom` in internal/stream/files.go
+> first. See docs/chromecast.md and docs/capture-safety.md.
+
 
 > **PUBLISHED 2026-08-20.** v0.1.0 is tagged, live on the AUR (`yay -S castr`,
 > indexed), and the bar widget is its own repo at
