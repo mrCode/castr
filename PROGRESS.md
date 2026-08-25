@@ -1,12 +1,27 @@
 # castr
 
-> **NEXT: confirm a picture on the Chromecast.** v0.2.0 is published (GitHub
-> tag, AUR, plugin) and the Chromecast path was verified on a Xiaomi stick --
-> but that run predates the security fixes, which changed the stream URL to
-> carry a random path prefix and restricted the server to the receiver's
-> address. `castr start chromecast:<id> mirror`, and look at the television.
-> If it fails, suspect `prefix` and `AllowFrom` in internal/stream/files.go
-> first. See docs/chromecast.md and docs/capture-safety.md.
+> **NEXT: confirm a picture on the Chromecast.** Everything below is done and
+> published; this is the one thing nobody has watched happen.
+>
+> ```
+> castr start chromecast:8a308a938ce275d9173a777e6003aa07 mirror
+> ```
+>
+> The confirmed minute of playback on the Xiaomi stick came BEFORE the security
+> fixes, which changed the URL the receiver is given (a random 128-bit path
+> prefix) and restricted the HTTP server to the receiver's address. Unit tests
+> cover both; no picture has been seen from the published build. If it fails,
+> suspect `prefix` and `AllowFrom` in internal/stream/files.go first — both are
+> cheap to revert. Look at the television, not the status line.
+>
+> **Shipped state (2026-08-25):** castr v0.2.0 on the AUR and installed here;
+> plugin `castr-indicator` v1.1.1; marketplace verification
+> [#2353](https://github.com/HANCORE-linux/omarchy-plugin-marketplace/issues/2353)
+> open at commit `4c9a149`, awaiting a maintainer. The listing stays "update
+> unverified" until that is approved.
+>
+> Chromecast background: docs/chromecast.md (seven receiver requirements, six
+> of which fail silently) and docs/capture-safety.md (why the guard exists).
 
 
 > **PUBLISHED 2026-08-20.** v0.1.0 is tagged, live on the AUR (`yay -S castr`,
