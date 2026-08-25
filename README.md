@@ -3,12 +3,13 @@
 Mirror your Hyprland desktop to an Apple TV or a Chromecast — or extend onto an
 Apple TV as a second monitor — from your desktop's menu, with a bar indicator.
 
-Two small static binaries -- a client and a daemon. `avahi` for discovery, `doubletake` for AirPlay,
-`hyprctl` for outputs; nothing else at runtime.
+Two small static binaries -- a client and a daemon. `avahi` for discovery,
+`hyprctl` for outputs, and then whichever backend you actually use: `doubletake`
+for AirPlay, GStreamer for Chromecast. Nothing else at runtime, and never both.
 
-> **Status: released, verified on hardware.** v0.1.0 is on the AUR. Mirror and
-> extend have both been cast to a real Apple TV, and mirror to a real
-> Chromecast (a Xiaomi TV Stick, a minute of unbroken playback) — picture confirmed, capture
+> **Status: released, verified on hardware.** v0.2.0 is on the AUR. Mirror and
+> extend have both been cast to a real Apple TV, and mirror to a real Chromecast
+> (a Xiaomi TV Stick, a minute of unbroken playback) — picture confirmed, capture
 > traced to the screen-share portal rather than a camera, the panel left at its
 > own refresh rate, and a nine-minute mirror session held at a steady rate.
 
@@ -17,12 +18,18 @@ Two small static binaries -- a client and a daemon. `avahi` for discovery, `doub
 omarchy-cast is Python and installing it pulls 14 packages and a 73 MiB
 runtime. The shipped feature set needs none of that: AirPlay capture belongs to
 `doubletake` (itself a Go binary), and our own code is subprocess orchestration
-— nine call sites, no GStreamer bindings, no D-Bus, no cgo.
+— no cgo, no GStreamer bindings, no Python.
 
 ```
 omarchy-cast   14 packages, 73 MiB runtime
-castr           1 package (avahi) + doubletake, two static binaries, 6.5 MB total
+castr           avahi + one backend, two static binaries, 6.5 MB total
 ```
+
+The Chromecast backend costs more than that line suggests, and it is worth
+being straight about it: it talks D-Bus to the screen-share portal and drives
+GStreamer to capture, encode and segment. Those are runtime dependencies an
+AirPlay-only user never installs, which is why they are optional rather than
+required.
 
 ## Using it
 
@@ -50,13 +57,34 @@ stays that long on purpose — discovery is only fast while its cache is warm.
 ## Installing
 
 ```bash
-yay -S castr doubletake-git
+yay -S castr
 ```
 
-`doubletake` is what actually speaks AirPlay, and it is required to cast.
+What else you need depends on which receiver you cast to. Neither backend's
+dependencies are pulled in automatically, and castr tells you which one is
+missing rather than failing obscurely.
+
+**For an Apple TV**, `doubletake` is what actually speaks AirPlay:
+
+```bash
+yay -S doubletake-git
+```
+
 Version 0.4.0 cannot capture on Hyprland; use `doubletake-git`.
 
-Your firewall has to let the receiver connect **back** to this machine:
+**For a Chromecast**, nothing speaks it but castr — the capture, the encoding
+and the HTTP server are all castr's own, built on GStreamer:
+
+```bash
+sudo pacman -S gst-plugin-pipewire gst-plugins-base gst-plugins-good gst-plugins-bad gst-libav gst-plugin-va
+```
+
+`doubletake` is not involved in a Chromecast cast, and GStreamer is not
+involved in an AirPlay one.
+
+Your firewall has to let the receiver reach this machine. An Apple TV connects
+**back** into a port range; a Chromecast fetches the stream from port 8010,
+which is covered under [Chromecast](#chromecast) above.
 
 ```bash
 sudo ufw allow 5353/udp
