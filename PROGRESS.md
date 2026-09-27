@@ -14,11 +14,16 @@
 > suspect `prefix` and `AllowFrom` in internal/stream/files.go first — both are
 > cheap to revert. Look at the television, not the status line.
 >
-> **Shipped state (2026-08-25):** castr v0.2.0 on the AUR and installed here;
+> **Shipped state (2026-08-26):** castr v0.2.0 on the AUR and installed here;
 > plugin `castr-indicator` v1.1.1; marketplace verification
-> [#2353](https://github.com/HANCORE-linux/omarchy-plugin-marketplace/issues/2353)
-> open at commit `4c9a149`, awaiting a maintainer. The listing stays "update
-> unverified" until that is approved.
+> [#2353](https://github.com/omacom/omarchy-plugin-marketplace/issues/2353)
+> approved at commit `4c9a149` — the listing's verified snapshot is v1.1.1.
+> The marketplace moved from `HANCORE-linux` to `omacom`; old links redirect.
+>
+> **No bug reports (checked 2026-09-27):** no issues or PRs on either repo, no
+> AUR comments, not flagged out of date. `castr-watch`, a systemd user timer
+> (`~/.local/bin/castr-watch`), checks three times a day and notifies only
+> when something new appears.
 >
 > Chromecast background: docs/chromecast.md (seven receiver requirements, six
 > of which fail silently) and docs/capture-safety.md (why the guard exists).
@@ -27,7 +32,7 @@
 > **PUBLISHED 2026-08-20.** v0.1.0 is tagged, live on the AUR (`yay -S castr`,
 > indexed), and the bar widget is its own repo at
 > github.com/mrCode/castr-indicator. The marketplace listing is
-> [issue #934](https://github.com/HANCORE-linux/omarchy-plugin-marketplace/issues/934):
+> [issue #934](https://github.com/omacom/omarchy-plugin-marketplace/issues/934):
 > `validated`, one human security review away.
 >
 > **A reviewer found a real bug (2026-08-21).** @ryanrhughes reported that
