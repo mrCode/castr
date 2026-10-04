@@ -1,6 +1,6 @@
 # Maintainer: Basem Aljedai <baljedai@gmail.com>
 pkgname=castr
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc="Cast your Hyprland screen to an Apple TV or a Chromecast: mirror or extend, from a menu or the CLI"
 arch=('x86_64' 'aarch64')

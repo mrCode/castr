@@ -14,16 +14,21 @@
 > suspect `prefix` and `AllowFrom` in internal/stream/files.go first — both are
 > cheap to revert. Look at the television, not the status line.
 >
-> **Shipped state (2026-08-26):** castr v0.2.0 on the AUR and installed here;
-> plugin `castr-indicator` v1.1.1; marketplace verification
-> [#2353](https://github.com/omacom/omarchy-plugin-marketplace/issues/2353)
-> approved at commit `4c9a149` — the listing's verified snapshot is v1.1.1.
-> The marketplace moved from `HANCORE-linux` to `omacom`; old links redirect.
+> **Shipped state (2026-10-04):** castr **v0.2.1** on the AUR and installed
+> here; plugin `castr-indicator` **v1.2.0**. The marketplace's verified snapshot
+> is still v1.1.1 until a fresh verification request is approved -- 1.2.0 runs
+> two more commands (`castr pin`, `castr reset-share`), so it needs one.
 >
-> **No bug reports (checked 2026-09-27):** no issues or PRs on either repo, no
-> AUR comments, not flagged out of date. `castr-watch`, a systemd user timer
-> (`~/.local/bin/castr-watch`), checks three times a day and notifies only
-> when something new appears.
+> **0.2.1 exists because doubletake 0.5.0 broke pairing.** doubletake 0.5.0
+> (2026-10-03) reworded its pairing prompt, and castr 0.2.0 only matched the
+> 0.4.x wording: the first cast to a new receiver sat in `connecting` with a
+> code on the television, and `castr pin` refused it. All three doubletake AUR
+> packages went to 0.5.0 the same day, so every new AirPlay install was broken.
+> @sspaeti found and fixed it within a day (mrCode/castr#1), checked against
+> the four prompts in doubletake's v0.5.0 source -- exactly four, all matched.
+> The same contributor added the panel's pairing card and share-reset button
+> (mrCode/castr-indicator#1). First outside contributions; `castr-watch` is how
+> they were noticed, at its first real alert.
 >
 > Chromecast background: docs/chromecast.md (seven receiver requirements, six
 > of which fail silently) and docs/capture-safety.md (why the guard exists).
