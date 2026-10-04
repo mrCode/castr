@@ -15,9 +15,11 @@
 > cheap to revert. Look at the television, not the status line.
 >
 > **Shipped state (2026-10-04):** castr **v0.2.1** on the AUR and installed
-> here; plugin `castr-indicator` **v1.2.0**. The marketplace's verified snapshot
-> is still v1.1.1 until a fresh verification request is approved -- 1.2.0 runs
-> two more commands (`castr pin`, `castr reset-share`), so it needs one.
+> here; plugin `castr-indicator` **v1.2.0**, also on this laptop's bar. The
+> marketplace's verified snapshot is still v1.1.1: 1.2.0 runs two more commands
+> (`castr pin`, `castr reset-share`), so it went back for review as
+> [#9978](https://github.com/omacom/omarchy-plugin-marketplace/issues/9978) --
+> `validated`, awaiting a maintainer.
 >
 > **0.2.1 exists because doubletake 0.5.0 broke pairing.** doubletake 0.5.0
 > (2026-10-03) reworded its pairing prompt, and castr 0.2.0 only matched the
