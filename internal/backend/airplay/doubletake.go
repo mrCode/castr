@@ -27,7 +27,25 @@ var ProgressMarkers = []string{"mirror session ready", "FairPlay setup complete"
 
 // PinPrompt is printed with no trailing newline, so output must be scanned as
 // chunks rather than lines.
+//
+// This is the wording of doubletake up to 0.4.x. PinPrompts carries every
+// wording doubletake has used since, because the daemon is pinned to none of
+// them: 0.5.0 says "receiver" rather than "Apple TV", and prompts for a
+// configured password with its own sentence. Missing a prompt leaves the
+// session in connecting forever and `castr pin` refusing the code the
+// television is showing.
 const PinPrompt = "Enter the PIN shown on Apple TV"
+
+// PinPrompts are the prompts doubletake prints when it is blocked on stdin
+// waiting for a pairing code or password. Any of them means the receiver
+// wants a credential from the user.
+var PinPrompts = []string{
+	PinPrompt,
+	"Enter the PIN shown on the receiver", // doubletake 0.5.0
+	"Enter the receiver's configured password or pairing PIN",          // 0.5.0, display failed
+	"Enter the receiver's configured password",                         // 0.5.0, password-only receiver
+	"Enter the code shown on the receiver, or its configured password", // 0.5.0, late Digest challenge
+}
 
 // Config is the subset of castr's configuration doubletake needs.
 type Config struct {
@@ -122,7 +140,14 @@ func (s *Scanner) Absorb(chunk string) {
 func (s *Scanner) Ready() bool { return s.contains(ReadyMarker) }
 
 // NeedsPin reports whether the receiver is waiting for a pairing code.
-func (s *Scanner) NeedsPin() bool { return s.contains(PinPrompt) }
+func (s *Scanner) NeedsPin() bool {
+	for _, prompt := range PinPrompts {
+		if s.contains(prompt) {
+			return true
+		}
+	}
+	return false
+}
 
 func (s *Scanner) contains(needle string) bool {
 	s.mu.Lock()

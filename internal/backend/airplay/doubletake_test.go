@@ -130,6 +130,28 @@ func TestPinPromptIsSeenWithoutANewline(t *testing.T) {
 	}
 }
 
+func TestEveryDoubletakePromptWordingIsSeen(t *testing.T) {
+	// doubletake 0.5.0 reworded the prompt ("the receiver" rather than
+	// "Apple TV") and added password variants. Observed against a real Apple
+	// TV: the television showed a code, castr sat in connecting, and
+	// `castr pin` answered "is not waiting for a PIN".
+	for _, prompt := range PinPrompts {
+		var s Scanner
+		s.Absorb("[PAIR] pair-setup\n" + prompt + ": ")
+		if !s.NeedsPin() {
+			t.Errorf("prompt %q was not recognised", prompt)
+		}
+	}
+}
+
+func TestOrdinaryOutputIsNotAPinPrompt(t *testing.T) {
+	var s Scanner
+	s.Absorb("searching for Apple TVs...\nmirror session ready (data port: 49217)\n")
+	if s.NeedsPin() {
+		t.Error("ordinary progress output was taken for a PIN prompt")
+	}
+}
+
 func TestPortalFailureIsReportedVerbatim(t *testing.T) {
 	// castr used to discard this and guess, and the guess blamed the firewall
 	// while doubletake had already printed the real reason.
