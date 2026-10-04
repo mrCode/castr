@@ -14,7 +14,12 @@
 //   castr bar            polled every 2s; NEVER spawns a daemon, so polling
 //                        cannot keep one alive past its idle timeout
 //   castr list --json    receivers, read only while the panel is open
-//   castr status --json  live casts, read only while the panel is open
+//   castr status --json  live casts, read while the panel is open and while a
+//                        cast is connecting, because that is when a receiver
+//                        may ask for a pairing code
+//   castr pin <id> <code>  sends the code the receiver is showing
+//   castr reset-share <mode>  forgets which output is shared, so the share
+//                        prompt asks again on the next cast
 //
 // It parses JSON rather than scraping the human output, which would break the
 // moment a column width changed.
@@ -55,6 +60,27 @@ Panel {
   property string listError: ""
   property string mode: "mirror"         // the pill, applied to whatever is clicked
   property string actionDeviceId: ""
+
+  // ---- pairing ----
+  // A receiver that has never seen this machine shows a code on its screen
+  // and castr parks the session in awaiting_pin until `castr pin` answers.
+  // Before this the code had to be typed in a terminal, which nothing in the
+  // bar pointed at. The panel now opens itself with a field for it.
+  property var pinSession: null          // the session waiting, or null
+  readonly property bool awaitingPin: pinSession !== null
+  property string pinError: ""
+  property bool pinSending: false
+  // The device the panel last opened itself for. Opening once per request
+  // rather than on every poll: a user who closed the panel to read the code
+  // off the television must not have it thrown back at them two seconds later.
+  property string pinOpenedFor: ""
+
+  // ---- share reset ----
+  // The screen-share portal remembers what was picked for each mode. Pick
+  // the wrong output once for extend (your own screen instead of the castr
+  // output) and every later extend is a mirror with no prompt to fix it.
+  property bool resetting: false
+  property string resetNote: ""
 
   // Whether the castr binary exists at all. Checked through sh, because a
   // Process whose binary is missing emits NO onExited -- it fails to start and
@@ -167,9 +193,61 @@ Panel {
     stopProc.running = true
   }
 
+  // Called whenever the session list is refreshed. Picks out a session that
+  // is waiting for a code and brings the panel up for it.
+  function updatePinSession() {
+    var waiting = null
+    for (var i = 0; i < root.sessions.length; i++)
+      if (root.sessions[i].state === "awaiting_pin") { waiting = root.sessions[i]; break }
+
+    root.pinSession = waiting
+    if (!waiting) {
+      root.pinOpenedFor = ""
+      root.pinError = ""
+      return
+    }
+    if (root.pinOpenedFor !== waiting.device_id) {
+      root.pinOpenedFor = waiting.device_id
+      root.pinError = ""
+      pinField.text = ""
+      if (!root.opened) root.open()
+      root.focusPinField()
+    }
+  }
+
+  function focusPinField() {
+    // The panel hands keyboard focus to its key catcher when it maps, through
+    // Qt.callLater; a bare forceActiveFocus here runs before that and loses.
+    // The timer runs after it.
+    pinFocusTimer.restart()
+  }
+
+  function resetShare() {
+    if (root.resetting) return
+    root.resetting = true
+    root.resetNote = ""
+    resetProc.command = ["castr", "reset-share", root.mode]
+    resetProc.running = true
+  }
+
+  function submitPin() {
+    var code = String(pinField.text || "").trim()
+    if (!root.pinSession || code === "" || root.pinSending) return
+    root.pinSending = true
+    root.pinError = ""
+    pinProc.command = ["castr", "pin", root.pinSession.device_id, code]
+    pinProc.running = true
+  }
+
   onOpenedChanged: {
-    if (opened) refreshPanel()
-    else { root.listError = ""; root.actionDeviceId = "" }
+    if (opened) {
+      refreshPanel()
+      if (root.awaitingPin) root.focusPinField()
+    } else {
+      root.listError = ""
+      root.actionDeviceId = ""
+      root.resetNote = ""
+    }
   }
 
   // ---------------------------------------------------------------- processes
@@ -231,6 +309,7 @@ Panel {
         } catch (e) {
           root.sessions = []
         }
+        root.updatePinSession()
       }
     }
   }
@@ -245,6 +324,56 @@ Panel {
     onExited: { root.actionDeviceId = ""; root.refreshStatus(); root.refreshPanel() }
   }
 
+  Process {
+    id: pinProc
+    stderr: StdioCollector { id: pinStderr }
+    onExited: function(exitCode) {
+      root.pinSending = false
+      if (exitCode === 0) {
+        pinField.text = ""
+        // The session moves on to streaming (or fails) in its own time; the
+        // next status poll shows which, and the pairing card goes with it.
+        root.refreshStatus()
+        root.refreshPanel()
+        return
+      }
+      // castr says what went wrong on stderr ("is not waiting for a PIN",
+      // "sending PIN: ..."). Show that rather than inventing a reason.
+      var reason = String(pinStderr.text || "").trim()
+      root.pinError = reason !== "" ? reason : "castr could not send the code"
+      root.focusPinField()
+    }
+  }
+
+  Process {
+    id: resetProc
+    stdout: StdioCollector { id: resetStdout }
+    stderr: StdioCollector { id: resetStderr }
+    onExited: function(exitCode) {
+      root.resetting = false
+      // castr says what it did on stdout and what went wrong on stderr; both
+      // are one line and the user's own next step, so they go under the pill.
+      var out = String(exitCode === 0 ? resetStdout.text : resetStderr.text || "").trim()
+      root.resetNote = out !== "" ? out
+        : exitCode === 0 ? "You will be asked what to share on the next cast."
+        : "castr could not reset the share"
+      root.refreshStatus()
+      root.refreshPanel()
+    }
+  }
+
+  Timer {
+    id: pinFocusTimer
+    interval: 150
+    repeat: false
+    onTriggered: {
+      if (root.opened && root.awaitingPin) {
+        pinField.selectAll()
+        pinField.forceActiveFocus()
+      }
+    }
+  }
+
   Timer {
     interval: 2000
     running: true
@@ -255,6 +384,12 @@ Panel {
       // runs should see the widget come alive without restarting anything.
       if (!installProc.running) installProc.running = true
       if (root.installed) root.refreshStatus()
+      // While a cast is coming up the daemon is certainly alive, so asking it
+      // for sessions cannot spawn one. This is how a pairing request is
+      // noticed with the panel closed, which is where it usually is: the user
+      // clicked a receiver and the panel closed itself.
+      if (root.installed && (root.busy || root.awaitingPin) && !sessionsProc.running)
+        sessionsProc.running = true
     }
   }
 
@@ -306,6 +441,9 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // The catcher claims every key before descendants see it, so while the
+      // code field is being typed into it has to stand aside.
+      blocked: pinField.activeFocus
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
@@ -382,6 +520,99 @@ Panel {
           }
         }
 
+        // ---------- the receiver wants a code ----------
+        BorderSurface {
+          id: pinCard
+          width: column.width
+          visible: root.awaitingPin
+          implicitHeight: pinColumn.implicitHeight + Style.spacing.lg * 2
+          height: implicitHeight
+          color: root.rowLive
+          radius: Style.cornerRadius
+          borderSpec: Border.controlSpec("focus", root.fg, Color.accent)
+
+          Column {
+            id: pinColumn
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Style.spacing.lg
+            spacing: Style.spacing.sm
+
+            Text {
+              width: parent.width
+              text: root.plain(root.pinSession ? root.pinSession.name : "") + " is showing a code"
+              textFormat: Text.PlainText
+              color: root.fg
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.body
+              font.bold: true
+              elide: Text.ElideRight
+            }
+
+            Text {
+              width: parent.width
+              text: "Type it here to pair. A receiver with a password set wants that instead."
+              textFormat: Text.PlainText
+              color: Qt.darker(root.fg, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Item {
+              width: parent.width
+              height: pinField.implicitHeight
+
+              TextField {
+                id: pinField
+                anchors.left: parent.left
+                anchors.right: pinSend.left
+                anchors.rightMargin: Style.spacing.md
+                anchors.verticalCenter: parent.verticalCenter
+                enabled: !root.pinSending
+                placeholderText: "Code on the screen"
+                foreground: root.fg
+                font.family: root.bar.fontFamily
+                // Plain text, not a password field: the code is already on a
+                // television in the same room, and seeing a typo beats
+                // re-reading four digits off the far wall.
+                onAccepted: root.submitPin()
+                Keys.onPressed: function(event) {
+                  if (event.key === Qt.Key_Escape) {
+                    root.close()
+                    event.accepted = true
+                  }
+                }
+              }
+
+              PanelActionButton {
+                id: pinSend
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: root.pinSending ? "󰔟" : "󰌑"
+                tooltipText: "Send the code"
+                enabled: !root.pinSending && String(pinField.text).trim() !== ""
+                foreground: root.fg
+                hoverColor: Color.accent
+                fontFamily: root.bar.fontFamily
+                onClicked: root.submitPin()
+              }
+            }
+
+            Text {
+              width: parent.width
+              visible: root.pinError !== ""
+              text: root.pinError
+              textFormat: Text.PlainText
+              color: Color.urgent
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+        }
+
         // ---------- what is casting now ----------
         Repeater {
           model: root.sessions
@@ -399,7 +630,9 @@ Panel {
               anchors.verticalCenter: parent.verticalCenter
               anchors.right: liveStop.left
               anchors.rightMargin: Style.spacing.md
-              text: modelData.name
+              text: modelData.state === "awaiting_pin" ? modelData.name + " — waiting for the code"
+                  : modelData.state === "connecting" ? modelData.name + " — connecting"
+                  : modelData.name
               textFormat: Text.PlainText
               color: root.fg
               font.family: root.bar.fontFamily
@@ -468,14 +701,51 @@ Panel {
           onChanged: function(value) { root.mode = value }
         }
 
-        Text {
+        Item {
           width: parent.width
           visible: root.installed
-          text: root.mode === "extend"
-            ? "A second desktop on the receiver. Pick the castr output if asked what to share."
-            : "Shows this screen on the receiver."
+          implicitHeight: Math.max(modeHint.implicitHeight, resetButton.implicitHeight)
+
+          Text {
+            id: modeHint
+            anchors.left: parent.left
+            anchors.right: resetButton.left
+            anchors.rightMargin: Style.spacing.md
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.mode === "extend"
+              ? "A second desktop on the receiver. Pick the castr output if asked what to share."
+              : "Shows this screen on the receiver."
+            textFormat: Text.PlainText
+            color: Qt.darker(root.fg, 1.5)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          // The way out of a wrong answer at the share prompt. It stops any
+          // live cast first: doubletake rewrites the remembered choice when it
+          // exits, so clearing it under a running cast is undone moments later.
+          PanelActionButton {
+            id: resetButton
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: root.resetting ? "󰔟" : "󰑓"
+            tooltipText: "Forget which screen is shared for " + root.mode
+                       + "\nStops the cast; the next one asks again"
+            enabled: !root.resetting
+            foreground: root.fg
+            hoverColor: Color.urgent
+            fontFamily: root.bar.fontFamily
+            onClicked: root.resetShare()
+          }
+        }
+
+        Text {
+          width: parent.width
+          visible: root.installed && root.resetNote !== ""
+          text: root.resetNote
           textFormat: Text.PlainText
-          color: Qt.darker(root.fg, 1.5)
+          color: Qt.darker(root.fg, 1.3)
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
           wrapMode: Text.WordWrap

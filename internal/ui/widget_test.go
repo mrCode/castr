@@ -289,3 +289,117 @@ func TestTheWidgetNeverStartsAnExtendCastOnAChromecast(t *testing.T) {
 		t.Error("a Chromecast row does not say it will mirror regardless of the pill")
 	}
 }
+
+// The always-on timer runs whether or not anybody is looking, so nothing it
+// starts may spawn a daemon: a 2s timer that did would keep one alive forever
+// and make the idle timeout meaningless.
+//
+// `castr bar` never spawns one. Anything else the timer starts must be gated on
+// a state that proves a daemon is ALREADY running -- a cast connecting, or a
+// session waiting for a pairing code -- because asking a running daemon cannot
+// create another.
+//
+// The checker above looks only at the command bound to statusProc, so it kept
+// passing when the timer began starting a second process (`castr status`, for
+// the pairing card). That poll is safe because it is gated; this test is what
+// says so, and fails the day the gate is removed.
+func TestEveryProcessTheAlwaysOnTimerStartsIsSafeOrGated(t *testing.T) {
+	qml := repoFile(t, "share/quickshell/castr-indicator/Widget.qml")
+	body := alwaysOnTimerBody(t, qml)
+
+	starts := regexp.MustCompile(`(\w+)\.running\s*=\s*true`).FindAllStringSubmatchIndex(body, -1)
+	if len(starts) == 0 {
+		t.Fatal("the always-on timer starts no processes; this checker has drifted from the widget")
+	}
+
+	for _, m := range starts {
+		id := body[m[2]:m[3]]
+		cmd := processCommand(t, qml, id)
+
+		// The install probe asks the shell whether castr exists; it never
+		// talks to a daemon.
+		if strings.Contains(cmd, `"bar"`) || strings.Contains(cmd, "command -v castr") {
+			continue
+		}
+
+		// The statement, including an `if` on the line above it.
+		stmt := body[:m[1]]
+		if k := strings.LastIndex(stmt[:m[0]], "\n"); k >= 0 {
+			if k2 := strings.LastIndex(stmt[:k], "\n"); k2 >= 0 {
+				stmt = stmt[k2:]
+			}
+		}
+		if !strings.Contains(stmt, "root.busy") && !strings.Contains(stmt, "root.awaitingPin") {
+			t.Errorf("the always-on timer starts %s (%s) without gating it on a running "+
+				"cast; that can spawn a daemon and keep it alive forever", id, strings.TrimSpace(cmd))
+		}
+	}
+
+	// The gate is only worth something if busy really means "a daemon holds a
+	// cast". Widened to cover idle, it would let the poll run with no daemon.
+	busy := regexp.MustCompile(`property bool busy:\s*([^\n]+)`).FindStringSubmatch(qml)
+	if busy == nil || !strings.Contains(busy[1], `"connecting"`) || strings.Contains(busy[1], `"idle"`) {
+		t.Errorf("busy no longer means a cast is connecting (%v); the timer's gate is meaningless", busy)
+	}
+}
+
+// alwaysOnTimerBody returns the onTriggered block of the Timer that runs
+// unconditionally and repeats.
+func alwaysOnTimerBody(t *testing.T, qml string) string {
+	t.Helper()
+	for _, loc := range regexp.MustCompile(`Timer\s*\{`).FindAllStringIndex(qml, -1) {
+		timer := braceBlock(qml, loc[1]-1)
+		if !strings.Contains(timer, "running: true") || !strings.Contains(timer, "repeat: true") {
+			continue
+		}
+		i := strings.Index(timer, "onTriggered:")
+		if i < 0 {
+			continue
+		}
+		j := strings.Index(timer[i:], "{")
+		return braceBlock(timer, i+j)
+	}
+	t.Fatal("no always-on repeating Timer in the widget")
+	return ""
+}
+
+// processCommand returns the command line of the Process with the given id.
+func processCommand(t *testing.T, qml, id string) string {
+	t.Helper()
+	i := strings.Index(qml, "id: "+id+"\n")
+	if i < 0 {
+		t.Fatalf("no Process with id %s", id)
+	}
+	rest := qml[i:]
+	j := strings.Index(rest, "command:")
+	if j < 0 {
+		// Commands set at call time, like pinProc's: find the assignment.
+		k := strings.Index(qml, id+".command =")
+		if k < 0 {
+			t.Fatalf("Process %s has no command", id)
+		}
+		rest, j = qml[k:], 0
+	}
+	line := rest[j:]
+	if end := strings.Index(line, "\n"); end >= 0 {
+		line = line[:end]
+	}
+	return line
+}
+
+// braceBlock returns the text from the brace at open to its matching close.
+func braceBlock(s string, open int) string {
+	depth := 0
+	for i := open; i < len(s); i++ {
+		switch s[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return s[open : i+1]
+			}
+		}
+	}
+	return s[open:]
+}
