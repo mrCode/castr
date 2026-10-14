@@ -1,7 +1,13 @@
 # castr
 
-> **NEXT: confirm a picture on the Chromecast.** Everything below is done and
-> published; this is the one thing nobody has watched happen.
+> **NEXT: two things published but never watched happening.**
+>
+> 1. **A real pairing round trip** (0.2.2/0.2.3): cast to an Apple TV that has
+>    never paired, and enter the code each way -- click the banner, the menu's
+>    first entry, `castr pin`, the bar panel's field. A friend's machine is the
+>    reason this exists; only tests and the live notification shell have
+>    exercised it. Check the next cast does NOT ask again.
+> 2. **A picture on the Chromecast**, below.
 >
 > ```
 > castr start chromecast:8a308a938ce275d9173a777e6003aa07 mirror
@@ -16,10 +22,12 @@
 >
 > **Shipped state (2026-10-14):** castr **v0.2.3** on the AUR and installed
 > here; plugin `castr-indicator` **v1.2.1**, also on this laptop's bar. The
-> marketplace's verified snapshot is still v1.1.1: 1.2.0 runs two more commands
-> (`castr pin`, `castr reset-share`), so it went back for review as
-> [#9978](https://github.com/omacom/omarchy-plugin-marketplace/issues/9978) --
-> `validated`, awaiting a maintainer.
+> marketplace's verified snapshot is still v1.1.1. v1.2.1 is under review as
+> [#11503](https://github.com/omacom/omarchy-plugin-marketplace/issues/11503),
+> filed 2026-10-14 -- `validated`, `security-review-required`, no maintainer
+> comment yet (checked 2026-10-14). It supersedes #9978, closed unreviewed.
+> **The maintainer closes a request after seven days without a reply**, and
+> castr-watch now alerts on any comment there: answer it within the week.
 >
 > **0.2.3 keeps the pairing code off the command line.** The marketplace
 > closed the 1.2.0 verification (#9978) after a maintainer's finding went
