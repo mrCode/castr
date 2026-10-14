@@ -20,7 +20,7 @@
 > suspect `prefix` and `AllowFrom` in internal/stream/files.go first — both are
 > cheap to revert. Look at the television, not the status line.
 >
-> **Shipped state (2026-10-14):** castr **v0.2.3** on the AUR and installed
+> **Shipped state (2026-10-14):** castr **v0.2.4** on the AUR and installed
 > here; plugin `castr-indicator` **v1.2.2**, also on this laptop's bar. The
 > marketplace's verified snapshot is still v1.1.1. Under review as
 > [#11503](https://github.com/omacom/omarchy-plugin-marketplace/issues/11503),
@@ -28,7 +28,11 @@
 > The maintainer accepted the stdin fix and found a second problem (an
 > editable TextField pulls the clipboard owner's data into the shared shell);
 > fixed and answered 2026-10-14. It supersedes #9978, closed unreviewed.
-> castr's own package still ships the 1.2.1 widget copy until its next release.
+>
+> **Rule: the AUR package's widget always matches the released plugin.** castr
+> ships a copy of the widget in /usr/share/castr; a plugin release means a
+> castr release too. 0.2.4 exists only to carry widget 1.2.2. Before tagging,
+> `packaging/sync-plugin-repo.sh` must say "in sync" against the plugin's tag.
 > **The maintainer closes a request after seven days without a reply**, and
 > castr-watch now alerts on any comment there: answer it within the week.
 >
