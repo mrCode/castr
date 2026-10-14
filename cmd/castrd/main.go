@@ -115,7 +115,12 @@ func run(idleTimeout time.Duration, verbose bool) error {
 		registry.Add(device)
 	}
 
-	notifier := notify.Notifier{Run: runNotify}
+	notifier := notify.Notifier{
+		Run:         runNotify,
+		Prompt:      promptNotify,
+		PairCommand: codePromptCommand,
+		Start:       startDetached,
+	}
 	backend := newAirPlayBackend(cfg, stateDir)
 	castBackend := newChromecastBackend(cfg)
 
@@ -222,6 +227,49 @@ func browse() ([]discovery.Device, error) {
 
 func runNotify(argv []string) error {
 	return exec.Command(argv[0], argv[1:]...).Run()
+}
+
+// promptNotify shows a banner with buttons and returns the name of the button
+// clicked, which notify-send prints when given --wait.
+func promptNotify(argv []string) (string, error) {
+	out, err := exec.Command(argv[0], argv[1:]...).Output()
+	return string(out), err
+}
+
+// codePromptCommand is what the pairing banner runs when clicked: `castr pin
+// <id>`, which asks for the code the receiver is showing and sends it.
+//
+// The prompt belongs to the CLI because that is where castr's menu program
+// already lives; the daemon only knows the moment it is needed.
+func codePromptCommand(device discovery.Device) []string {
+	return []string{castrBinary(), "pin", device.ID}
+}
+
+// startDetached runs a command in its own session, so it is not tied to the
+// daemon, and reaps it so it leaves no zombie behind.
+func startDetached(argv []string) {
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		log.Printf("could not start %v: %v", argv, err)
+		return
+	}
+	go func() { _ = cmd.Wait() }()
+}
+
+// castrBinary finds the CLI: on PATH, or beside this daemon, so a build
+// directory works without installing anything.
+func castrBinary() string {
+	if path, err := exec.LookPath("castr"); err == nil {
+		return path
+	}
+	if self, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(self), "castr")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return "castr"
 }
 
 // newChromecastBackend wires the Cast backend up to the real system.

@@ -480,3 +480,112 @@ func TestForgettingNothingIsNotAnError(t *testing.T) {
 		t.Errorf("cleared = %v from an empty state directory", cleared)
 	}
 }
+
+// doubletake 0.5.0 added a fourth part to a pairing: pairing_protocol, the
+// pair-verify protocol ("hap" or "raw") it was negotiated with. Without it,
+// doubletake guesses from the receiver's capabilities -- the behaviour of 0.4.x,
+// and wrong for some receivers, which is why 0.5.0 started recording it. A
+// wrong guess fails verification, and doubletake answers that by pairing from
+// scratch: the receiver shows a code again. So the protocol is part of the
+// pairing and has to travel with the keys.
+
+const pairedTVWithProtocol = `{"AA:BB:CC:DD:EE:FF":{"pairing_id":"id-1","ed25519_public":"pub-1",` +
+	`"ed25519_seed":"seed-1","pairing_protocol":"raw","restore_token":"token-for-mirror"}}`
+
+func TestThePairingProtocolTravelsWithTheKeys(t *testing.T) {
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), pairedTVWithProtocol)
+
+	if err := SyncPairing(dir, []string{"mirror", "extend"}); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := readCredsMap(t, CredsPath(dir, "extend"))["AA:BB:CC:DD:EE:FF"]
+	if entry["pairing_protocol"] != "raw" {
+		t.Errorf("extend got pairing_protocol %v, want raw; it would guess, and a wrong "+
+			"guess makes the receiver ask for a code again", entry["pairing_protocol"])
+	}
+}
+
+// The worse case. extend paired once before, under one protocol; mirror has
+// since paired again, under another. Copying mirror's new keys while leaving
+// extend's old protocol beside them describes a pairing that never existed.
+func TestNewKeysNeverSitBesideAnOldPairingsProtocol(t *testing.T) {
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "extend"), `{"AA:BB:CC:DD:EE:FF":{"pairing_id":"old",`+
+		`"ed25519_public":"old-pub","ed25519_seed":"old-seed","pairing_protocol":"hap"}}`)
+	putCreds(t, CredsPath(dir, "mirror"), pairedTVWithProtocol)
+
+	if _, err := MergePairing(CredsPath(dir, "mirror"), CredsPath(dir, "extend")); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := readCredsMap(t, CredsPath(dir, "extend"))["AA:BB:CC:DD:EE:FF"]
+	if entry["ed25519_seed"] != "seed-1" || entry["pairing_protocol"] != "raw" {
+		t.Errorf("extend holds seed=%v protocol=%v; want mirror's whole pairing, seed-1/raw",
+			entry["ed25519_seed"], entry["pairing_protocol"])
+	}
+}
+
+// A pairing written by doubletake 0.4.x has no protocol at all. Copying its
+// keys must REMOVE any protocol the destination had, so doubletake guesses for
+// these keys exactly as it does in the file they came from -- not trusts a
+// protocol recorded for some other pairing.
+func TestAPairingWithNoProtocolClearsAStaleOne(t *testing.T) {
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "extend"), `{"AA:BB:CC:DD:EE:FF":{"pairing_id":"old",`+
+		`"ed25519_public":"old-pub","ed25519_seed":"old-seed","pairing_protocol":"hap"}}`)
+	putCreds(t, CredsPath(dir, "mirror"), pairedTV) // no pairing_protocol
+
+	if _, err := MergePairing(CredsPath(dir, "mirror"), CredsPath(dir, "extend")); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := readCredsMap(t, CredsPath(dir, "extend"))["AA:BB:CC:DD:EE:FF"]
+	if p, stale := entry["pairing_protocol"]; stale {
+		t.Errorf("extend kept protocol %v beside keys it was never negotiated for", p)
+	}
+	if entry["ed25519_seed"] != "seed-1" {
+		t.Errorf("extend's seed = %v, want the copied pairing", entry["ed25519_seed"])
+	}
+}
+
+// doubletake rejects a pairing missing any of its keys. Copying a partial one
+// would replace a working pairing with one that cannot be used.
+func TestAnIncompletePairingIsNotCopied(t *testing.T) {
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "extend"), `{"AA:BB:CC:DD:EE:FF":{"pairing_id":"good",`+
+		`"ed25519_public":"good-pub","ed25519_seed":"good-seed"}}`)
+	putCreds(t, CredsPath(dir, "mirror"), `{"AA:BB:CC:DD:EE:FF":{"pairing_id":"half"}}`)
+
+	if _, err := MergePairing(CredsPath(dir, "mirror"), CredsPath(dir, "extend")); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := readCredsMap(t, CredsPath(dir, "extend"))["AA:BB:CC:DD:EE:FF"]
+	if entry["pairing_id"] != "good" || entry["ed25519_seed"] != "good-seed" {
+		t.Errorf("a half pairing replaced a working one: %v", entry)
+	}
+}
+
+// A malformed file must not take the daemon down. Values arriving as arrays
+// cannot be compared with !=, and comparing them used to be the only check.
+func TestAnOddlyShapedCredentialsFileDoesNotPanic(t *testing.T) {
+	dir := t.TempDir()
+	// Arrays on BOTH sides: Go panics comparing two values of the same
+	// uncomparable type, and only then -- an array against a string is merely
+	// unequal, so a test with a string on one side proves nothing.
+	putCreds(t, CredsPath(dir, "extend"), `{"AA:BB:CC:DD:EE:FF":{"pairing_id":["x"],`+
+		`"ed25519_public":["y"],"ed25519_seed":["z"]}}`)
+	putCreds(t, CredsPath(dir, "mirror"), `{"AA:BB:CC:DD:EE:FF":{"pairing_id":["p"],`+
+		`"ed25519_public":["q"],"ed25519_seed":["r"]}}`)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("merging panicked: %v", r)
+		}
+	}()
+	if _, err := MergePairing(CredsPath(dir, "mirror"), CredsPath(dir, "extend")); err != nil {
+		t.Fatal(err)
+	}
+}

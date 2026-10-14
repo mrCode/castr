@@ -37,7 +37,8 @@ const Usage = `castr — cast this screen to an AirPlay receiver
   castr stop [id]            stop casting; with no id, stop everything
   castr status [--json]      show what is casting
   castr bar                  one line of JSON for the bar indicator
-  castr pin <id> <code>      send a pairing code
+  castr pin [id] [code]      send the code a receiver is showing; asks for it
+                             if not given, and finds the receiver if not named
   castr add <address> [name] register a receiver mDNS cannot see
   castr forget <id>          drop a registered receiver
   castr quit                 stop the background daemon
@@ -261,13 +262,6 @@ func (a *App) emitJSON(payload any) int {
 	}
 	fmt.Fprintln(a.Out, string(raw))
 	return 0
-}
-
-func (a *App) pin(args []string) int {
-	if len(args) < 2 {
-		return a.fail("pin needs a receiver id and a code")
-	}
-	return a.run(func() error { return a.Client.SubmitPin(args[0], args[1]) })
 }
 
 func (a *App) add(args []string) int {

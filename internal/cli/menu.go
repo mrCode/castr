@@ -34,6 +34,16 @@ func (a *App) menu() int {
 		return 0 // cancelled, which is not a failure
 	}
 
+	if name := ui.PairingSession(choice); name != "" {
+		for _, s := range sessions {
+			if s.Name == name {
+				return a.askForCode(s)
+			}
+		}
+		fmt.Fprintln(a.Out, "That receiver is no longer waiting for a code.")
+		return 0
+	}
+
 	if name := ui.StoppingSession(choice); name != "" {
 		for _, s := range sessions {
 			if s.Name == name {

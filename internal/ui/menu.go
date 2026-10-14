@@ -27,6 +27,16 @@ const ManualEntry = "Enter an address manually..."
 // stopping was impossible when it was merely invisible.
 const StopEntry = "Stop casting"
 
+// PairEntry leads the menu while a receiver is showing a pairing code.
+//
+// It exists because the menu had no way to take that code. A cast started
+// from the menu or the command line reached a receiver that wanted pairing,
+// the television showed a code, a banner said to enter it -- and nothing
+// would accept it. Pairing never completed, so the receiver asked again on
+// every cast. Reopening the menu is the first thing anyone tries, so that is
+// where the code goes in.
+const PairEntry = "Enter the pairing code"
+
 // Mode entries. Extend names the output because picking the wrong one at the
 // portal prompt silently produces a mirror, and the portal then REMEMBERS that
 // choice and repeats it on every later cast.
@@ -84,8 +94,15 @@ func Entries(devices []daemon.DeviceJSON, sessions []daemon.SessionJSON) []strin
 		return strings.ToLower(ordered[i].Name) < strings.ToLower(ordered[j].Name)
 	})
 
-	entries := make([]string, 0, len(ordered)+len(sessions)+1)
-	// First, so stopping is always one click away while casting.
+	entries := make([]string, 0, len(ordered)+2*len(sessions)+1)
+	// Ahead even of stopping: a receiver waiting for a code holds the cast
+	// until it gets one, and this is the only thing that can give it.
+	for _, s := range sessions {
+		if s.State == string(session.AwaitingPin) {
+			entries = append(entries, PairingLine(s.Name))
+		}
+	}
+	// Then stopping, so it is always one click away while casting.
 	for _, s := range sessions {
 		entries = append(entries, fmt.Sprintf("%s (%s)", StopEntry, s.Name))
 	}
@@ -102,6 +119,20 @@ func Entries(devices []daemon.DeviceJSON, sessions []daemon.SessionJSON) []strin
 	}
 	entries = append(entries, ManualEntry)
 	return entries
+}
+
+// PairingLine is the menu line offering to enter a receiver's pairing code.
+func PairingLine(name string) string {
+	return fmt.Sprintf("%s (%s)", PairEntry, name)
+}
+
+// PairingSession returns the name in a PairingLine, "" if the line is not one.
+func PairingSession(line string) string {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, PairEntry+" (") || !strings.HasSuffix(line, ")") {
+		return ""
+	}
+	return line[len(PairEntry)+2 : len(line)-1]
 }
 
 // StoppingSession returns the name in a "Stop casting (Name)" line, "" if the

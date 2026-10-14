@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 
 	"github.com/mrCode/castr/internal/discovery"
@@ -143,7 +144,20 @@ var LegacyCredsFilenames = map[string]string{
 // pairingFields are the per-receiver keys. Everything else in an entry --
 // restore_token above all -- describes a capture, not a receiver, and must
 // never be copied between modes or carried over from another application.
-var pairingFields = []string{"pairing_id", "ed25519_public", "ed25519_seed"}
+var pairingFields = []string{"pairing_id", "ed25519_public", "ed25519_seed", "pairing_protocol"}
+
+// identityFields must ALL be present for an entry to hold a usable pairing;
+// doubletake rejects one missing any of them.
+var identityFields = pairingFields[:3]
+
+// A pairing is copied as one unit: its id, both keys, and pairing_protocol --
+// the pair-verify protocol it was negotiated with, which doubletake records
+// from 0.5.0. Without the protocol doubletake guesses from the receiver's
+// capabilities, as 0.4.x did; 0.5.0 began recording it because that guess is
+// wrong for some receivers, and a wrong guess fails verification, which
+// doubletake answers by pairing from scratch -- the television shows a code
+// again. So a field the source lacks is REMOVED from the destination: new keys
+// beside an older pairing's protocol describe a pairing that never existed.
 
 // MergePairing copies pairing keys from src into dst without touching either
 // file's portal tokens, and returns the receivers it added.
@@ -162,6 +176,11 @@ func MergePairing(srcPath, dstPath string) ([]string, error) {
 
 	var added []string
 	for receiver, entry := range src {
+		// A partial pairing is not copied: it would replace a working one
+		// with one doubletake refuses.
+		if !hasAll(entry, identityFields) {
+			continue
+		}
 		target, ok := dst[receiver]
 		if !ok {
 			target = map[string]any{}
@@ -169,11 +188,15 @@ func MergePairing(srcPath, dstPath string) ([]string, error) {
 		changed := false
 		for _, field := range pairingFields {
 			value, present := entry[field]
-			if !present {
-				continue
-			}
-			if existing, ok := target[field]; !ok || existing != value {
+			existing, had := target[field]
+			switch {
+			// DeepEqual, not !=: a malformed file can hold arrays, and Go
+			// panics comparing two of them -- taking the daemon down with it.
+			case present && (!had || !reflect.DeepEqual(existing, value)):
 				target[field] = value
+				changed = true
+			case !present && had:
+				delete(target, field)
 				changed = true
 			}
 		}
@@ -349,4 +372,14 @@ func copyIfAbsent(src, dst string, mode os.FileMode) (bool, error) {
 		return false, fmt.Errorf("writing %s: %w", dst, err)
 	}
 	return true, nil
+}
+
+// hasAll reports whether an entry carries every one of fields.
+func hasAll(entry map[string]any, fields []string) bool {
+	for _, f := range fields {
+		if _, ok := entry[f]; !ok {
+			return false
+		}
+	}
+	return true
 }

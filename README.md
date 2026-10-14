@@ -39,6 +39,7 @@ castr list                 # what is on the network
 castr start <id> extend    # or mirror, which is the default
 castr stop                 # stop everything
 castr add 10.0.0.5 "TV"    # a receiver mDNS cannot see
+castr pin                  # type the code a receiver is showing
 ```
 
 **Mirror** shows this screen on the receiver. **Extend** gives you a second
@@ -53,6 +54,22 @@ active monitors.
 
 The daemon starts itself on first use and exits after fifteen minutes idle. It
 stays that long on purpose — discovery is only fast while its cache is warm.
+
+### Pairing
+
+The first cast to an Apple TV puts a code on its screen, and the cast waits
+until you type it in. Any of these takes it:
+
+- **Click the castr notification** that appears — it opens a prompt for the code.
+- **Open the cast menu again** — the first entry is *Enter the pairing code*.
+- **The bar panel**, if you use the widget — it opens with a field for the code.
+- **`castr pin`** — finds the receiver that is waiting and asks for its code.
+
+The code is asked for once per receiver; after that castr remembers the pairing.
+
+**If it asks on every cast**, check the Apple TV first: *Settings → AirPlay and
+HomeKit → Require Code*. Set to **Every Time**, the television demands a new code
+on each connection no matter what castr remembers — choose **First Time Only**.
 
 ## Installing
 
