@@ -460,3 +460,70 @@ func TestThePanelOnlyUsesStdinWithACastrThatReadsIt(t *testing.T) {
 		t.Error("the fallback for an older castr still writes the code to it")
 	}
 }
+
+// An editable text input makes Qt fetch the clipboard owner's data whenever
+// the clipboard changes, with no size limit and no deadline, so any
+// application holding the clipboard can stall the shell or exhaust its memory
+// -- and the shell is shared by every widget on the bar. A marketplace
+// reviewer found the pairing card's TextField doing exactly that, and hiding
+// the card did not help: a hidden input is still an input, alive as long as
+// the panel. The widget takes keystrokes itself instead.
+func TestTheWidgetHasNoEditableTextInput(t *testing.T) {
+	qml := repoFile(t, "share/quickshell/castr-indicator/Widget.qml")
+	for _, kind := range []string{"TextField", "TextInput", "TextEdit", "TextArea"} {
+		if regexp.MustCompile(`(^|[^A-Za-z.])` + kind + `\s*\{`).MatchString(qml) {
+			t.Errorf("the widget creates a %s; an editable text input pulls the clipboard "+
+				"owner's data into the shell on every clipboard change", kind)
+		}
+	}
+}
+
+// The code field takes typed characters and nothing else: no paste, and no
+// reference to the clipboard at all.
+func TestTheCodeFieldNeverPastes(t *testing.T) {
+	qml := repoFile(t, "share/quickshell/castr-indicator/Widget.qml")
+
+	i := strings.Index(qml, "id: pinInput")
+	if i < 0 {
+		t.Fatal("no pinInput in the widget; this checker has drifted from it")
+	}
+	field := qml[i:]
+	field = field[:strings.Index(field, "id: pinSend")]
+
+	if !strings.Contains(field, "Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier") {
+		t.Error("the code field does not refuse modified keys, so Ctrl+V reaches it")
+	}
+	// Code, not commentary: the comments explain why the clipboard is avoided,
+	// and saying the word is not touching it.
+	if code := stripComments(qml); strings.Contains(strings.ToLower(code), "clipboard") ||
+		strings.Contains(code, "paste(") {
+		t.Error("the widget's code reaches for the clipboard")
+	}
+}
+
+// stripComments removes // comments from QML. A // preceded by a colon -- a URL
+// in a string -- is kept.
+func stripComments(qml string) string {
+	re := regexp.MustCompile(`(^|\s)//.*$`)
+	lines := strings.Split(qml, "\n")
+	for i, l := range lines {
+		lines[i] = re.ReplaceAllString(l, "$1")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// A code typed and never sent may be a receiver's password. Once nothing is
+// waiting for it, it is not kept.
+func TestATypedCodeIsNotKeptOnceNothingWaitsForIt(t *testing.T) {
+	qml := repoFile(t, "share/quickshell/castr-indicator/Widget.qml")
+	i := strings.Index(qml, "function updatePinSession")
+	if i < 0 {
+		t.Fatal("no updatePinSession in the widget")
+	}
+	body := qml[i:]
+	notWaiting := body[strings.Index(body, "if (!waiting) {"):]
+	notWaiting = notWaiting[:strings.Index(notWaiting, "return")]
+	if !strings.Contains(notWaiting, `root.pinCode = ""`) {
+		t.Error("a typed code outlives the request it was typed for")
+	}
+}

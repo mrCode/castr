@@ -1,0 +1,93 @@
+import QtQuick
+import QtTest
+
+// A stub of the panel around the widget's REAL pinInput key handler, which is
+// pasted in verbatim from Widget.qml -- so this tests the shipped code.
+Item {
+  id: root
+  width: 300; height: 60
+  property string pinCode: ""
+  readonly property int maxCodeLength: 128
+  property bool pinSending: false
+  property int submitted: 0
+  property int closed: 0
+  function submitPin() { submitted++ }
+  function close() { closed++ }
+
+  Item {
+    id: pinInput
+    anchors.fill: parent
+    focus: true
+    HANDLER
+  }
+
+  TestCase {
+    name: "PinInput"
+    when: windowShown
+    function init() {
+      root.pinCode = ""; root.submitted = 0; root.closed = 0; root.pinSending = false
+      pinInput.forceActiveFocus()
+    }
+    function test_digits() {
+      keyClick(Qt.Key_4); keyClick(Qt.Key_8); keyClick(Qt.Key_2); keyClick(Qt.Key_1)
+      compare(root.pinCode, "4821")
+    }
+    // Omarchy's key catcher treats these as navigation; a password may hold them.
+    function test_letters_the_catcher_would_swallow() {
+      keyClick("h"); keyClick("j"); keyClick("k"); keyClick("l"); keyClick("x"); keyClick(Qt.Key_Space)
+      compare(root.pinCode, "hjklx ")
+    }
+    // A real keyboard delivers the shifted character as the event text, with
+    // Shift still held. QtTest's keyClick(Qt.Key_A, Shift) does not apply a
+    // keymap and reports "a" -- so the event is built the way input arrives.
+    function test_shifted_and_symbols() {
+      keyClick("A", Qt.ShiftModifier); keyClick("!", Qt.ShiftModifier); keyClick("@", Qt.ShiftModifier)
+      compare(root.pinCode, "A!@")
+    }
+    // Shift alone must never block typing -- capitals and most symbols need it.
+    function test_shift_is_not_treated_like_ctrl() {
+      keyClick("Z", Qt.ShiftModifier)
+      compare(root.pinCode, "Z")
+    }
+    function test_backspace() {
+      keyClick("a"); keyClick("b"); keyClick(Qt.Key_Backspace)
+      compare(root.pinCode, "a")
+    }
+    function test_backspace_on_empty_is_harmless() {
+      keyClick(Qt.Key_Backspace)
+      compare(root.pinCode, "")
+    }
+    function test_enter_submits() {
+      keyClick("1"); keyClick(Qt.Key_Return)
+      compare(root.submitted, 1)
+      keyClick(Qt.Key_Enter)
+      compare(root.submitted, 2)
+    }
+    function test_escape_closes() {
+      keyClick(Qt.Key_Escape)
+      compare(root.closed, 1)
+      compare(root.pinCode, "")
+    }
+    // The paste shortcut must do nothing at all.
+    function test_ctrl_v_does_not_paste() {
+      keyClick(Qt.Key_V, Qt.ControlModifier)
+      keyClick(Qt.Key_Insert, Qt.ShiftModifier)
+      compare(root.pinCode, "")
+    }
+    function test_alt_and_meta_chords_are_ignored() {
+      keyClick(Qt.Key_X, Qt.AltModifier); keyClick(Qt.Key_X, Qt.MetaModifier)
+      compare(root.pinCode, "")
+    }
+    function test_length_is_bounded() {
+      root.pinCode = "x".repeat(128)
+      keyClick("y")
+      compare(root.pinCode.length, 128)
+    }
+    function test_no_typing_while_sending() {
+      root.pinSending = true
+      keyClick("5"); keyClick(Qt.Key_Backspace)
+      compare(root.pinCode, "")
+      compare(root.submitted, 0)
+    }
+  }
+}
