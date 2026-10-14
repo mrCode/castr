@@ -14,12 +14,21 @@
 > suspect `prefix` and `AllowFrom` in internal/stream/files.go first — both are
 > cheap to revert. Look at the television, not the status line.
 >
-> **Shipped state (2026-10-14):** castr **v0.2.2** on the AUR and installed
-> here; plugin `castr-indicator` **v1.2.0**, also on this laptop's bar. The
+> **Shipped state (2026-10-14):** castr **v0.2.3** on the AUR and installed
+> here; plugin `castr-indicator` **v1.2.1**, also on this laptop's bar. The
 > marketplace's verified snapshot is still v1.1.1: 1.2.0 runs two more commands
 > (`castr pin`, `castr reset-share`), so it went back for review as
 > [#9978](https://github.com/omacom/omarchy-plugin-marketplace/issues/9978) --
 > `validated`, awaiting a maintainer.
+>
+> **0.2.3 keeps the pairing code off the command line.** The marketplace
+> closed the 1.2.0 verification (#9978) after a maintainer's finding went
+> unanswered for a week: the panel passed the code -- or a receiver's password
+> -- as an argument, readable by every account via /proc/<pid>/cmdline.
+> `castr pin <id> -` now reads it from stdin; the panel writes it there and
+> checks `castr --version` first, falling back to castr's own prompt on older
+> castr. castr-watch did not see the review: it watches issues and PRs on our
+> repos, not comments on our marketplace requests.
 >
 > **0.2.2 gives a pairing code somewhere to go.** Reported from a friend's
 > machine: every cast to his Apple TV asked for a code and nothing took one, so
