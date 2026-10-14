@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/mrCode/castr/internal/daemon"
@@ -30,8 +32,52 @@ func (a *App) pin(args []string) int {
 	case 1:
 		return a.pinWaiting(args[0])
 	default:
+		if args[1] == StdinCode {
+			return a.pinFromStdin(args[0])
+		}
 		return a.run(func() error { return a.Client.SubmitPin(args[0], args[1]) })
 	}
+}
+
+// StdinCode in place of a code reads the code from stdin.
+//
+// A command line is readable by every account on the machine --
+// /proc/<pid>/cmdline is world-readable, so `ps` shows it -- and doubletake
+// 0.5.0 asks for a receiver's configured PASSWORD in the same place it asks
+// for a pairing code. A marketplace reviewer flagged the bar panel for passing
+// it as an argument. The panel now writes it to stdin, the way Omarchy's own
+// network panel passes Wi-Fi passwords.
+const StdinCode = "-"
+
+// maxCodeBytes bounds a code read from stdin. A pairing code is a few
+// characters and a receiver password a few dozen; reading without a limit lets
+// whatever holds the other end grow this process without bound.
+const maxCodeBytes = 1024
+
+func (a *App) pinFromStdin(deviceID string) int {
+	if a.In == nil {
+		return a.fail("no code on stdin")
+	}
+	// One line, not everything until end-of-file. The panel writes the code
+	// and a newline and leaves stdin open, as Omarchy's own network panel does
+	// with Wi-Fi passwords; waiting for an end that never comes would leave
+	// the panel on "sending" while the receiver still shows its code. Reading
+	// stops at the first newline, so a second line never reaches doubletake.
+	line, err := bufio.NewReader(io.LimitReader(a.In, maxCodeBytes+1)).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return a.fail("reading the code from stdin: " + err.Error())
+	}
+	if len(line) > maxCodeBytes {
+		// Deliberately not echoed: it may be a password.
+		return a.fail("the code on stdin is too long")
+	}
+	code := strings.TrimSpace(line)
+	if code == "" {
+		// Never sent as "-". Every castr before this one did exactly that,
+		// and an empty code is an error, not a code.
+		return a.fail("no code on stdin")
+	}
+	return a.run(func() error { return a.Client.SubmitPin(deviceID, code) })
 }
 
 // pinWaiting asks for the code of the receiver that is waiting for one --

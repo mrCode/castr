@@ -22,6 +22,9 @@ type App struct {
 	Picker picker.Picker
 	Out    io.Writer
 	Err    io.Writer
+	// In is where `castr pin <id> -` reads a code, so that a code or password
+	// never has to appear on a command line.
+	In io.Reader
 
 	// Socket is only needed by the status command, which deliberately does not
 	// go through Client -- see client.SessionsQuietly.
@@ -37,8 +40,9 @@ const Usage = `castr — cast this screen to an AirPlay receiver
   castr stop [id]            stop casting; with no id, stop everything
   castr status [--json]      show what is casting
   castr bar                  one line of JSON for the bar indicator
-  castr pin [id] [code]      send the code a receiver is showing; asks for it
-                             if not given, and finds the receiver if not named
+  castr pin [id] [code|-]    send the code a receiver is showing; asks for it
+                             if not given, finds the receiver if not named,
+                             and reads it from stdin given "-"
   castr add <address> [name] register a receiver mDNS cannot see
   castr forget <id>          drop a registered receiver
   castr quit                 stop the background daemon

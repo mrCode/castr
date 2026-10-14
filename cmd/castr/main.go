@@ -36,6 +36,7 @@ func main() {
 		Picker: picker.Picker{Look: exec.LookPath, Exec: runMenu},
 		Out:    os.Stdout,
 		Err:    os.Stderr,
+		In:     os.Stdin,
 		Socket: socket,
 	}
 	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version") {

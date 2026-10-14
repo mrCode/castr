@@ -403,3 +403,60 @@ func braceBlock(s string, open int) string {
 	}
 	return s[open:]
 }
+
+// A command line is readable by every account on the machine --
+// /proc/<pid>/cmdline is world-readable -- and a receiver with a password set
+// wants it in the same field as a pairing code. A marketplace reviewer flagged
+// the panel for passing the code to `castr pin` as an argument, and closed the
+// listing's update over it. The code goes over stdin now, as Omarchy's own
+// network panel does with Wi-Fi passwords.
+func TestThePairingCodeNeverReachesACommandLine(t *testing.T) {
+	qml := repoFile(t, "share/quickshell/castr-indicator/Widget.qml")
+
+	pinCommands := regexp.MustCompile(`\["castr",\s*"pin"[^\]]*\]`).FindAllString(qml, -1)
+	if len(pinCommands) == 0 {
+		t.Fatal("the widget runs no `castr pin`; this checker has drifted from it")
+	}
+	for _, cmd := range pinCommands {
+		// Only the receiver's id and, at most, the stdin marker.
+		rest := strings.TrimSuffix(strings.TrimSpace(cmd[strings.Index(cmd, `"pin"`)+len(`"pin"`):]), "]")
+		for _, part := range strings.Split(rest, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" || part == `"-"` || strings.HasSuffix(part, "deviceId") {
+				continue
+			}
+			t.Errorf("`castr pin` is given %s on its command line: %s", part, cmd)
+		}
+	}
+
+	// And the code has a way in that is not the command line.
+	for _, want := range []string{"stdinEnabled: true", `write(secret + "\n")`} {
+		if !strings.Contains(qml, want) {
+			t.Errorf("the pin process is missing %q; the code has no way in but argv", want)
+		}
+	}
+}
+
+// castr before 0.2.3 cannot read the code from stdin, and handed
+// `castr pin <id> -` it sends a literal "-" to the television. The panel asks
+// castr its version before choosing, and falls back to castr's own prompt --
+// never to putting the code on the command line.
+func TestThePanelOnlyUsesStdinWithACastrThatReadsIt(t *testing.T) {
+	qml := repoFile(t, "share/quickshell/castr-indicator/Widget.qml")
+
+	for _, want := range []string{
+		`command: ["castr", "--version"]`,
+		"function readsCodeFromStdin(",
+		"return v[2] >= 3", // 0.2.3 is the first that reads stdin
+	} {
+		if !strings.Contains(qml, want) {
+			t.Errorf("the version gate is missing %q", want)
+		}
+	}
+	// The fallback clears the secret, so an older castr is never written the code.
+	fallback := qml[strings.Index(qml, "function sendPinWith("):]
+	fallback = fallback[:strings.Index(fallback, "pinProc.running = true")]
+	if !strings.Contains(fallback, `pinProc.secret = ""`) {
+		t.Error("the fallback for an older castr still writes the code to it")
+	}
+}

@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mrCode/castr/internal/daemon"
 	"github.com/mrCode/castr/internal/ui"
@@ -151,5 +153,128 @@ func TestCancellingTheCodePromptSendsNothing(t *testing.T) {
 	}
 	if sent := pinsSent(h); len(sent) != 0 {
 		t.Fatalf("a cancelled prompt sent %+v", sent)
+	}
+}
+
+// A code on the command line is readable by every account on the machine --
+// /proc/<pid>/cmdline is world-readable, so `ps` shows it. A marketplace
+// reviewer flagged exactly that in the bar panel, and doubletake 0.5.0 asks
+// for a receiver's configured PASSWORD in the same place, which is a real
+// secret. `castr pin <id> -` takes the code on stdin instead, the way Omarchy's
+// own network panel passes Wi-Fi passwords.
+
+func TestTheCodeCanArriveOnStdin(t *testing.T) {
+	h := newHarness(t)
+	h.app.In = strings.NewReader("4821\n")
+
+	if code := h.app.Run([]string{"pin", "airplay:aa:bb", "-"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.errOut)
+	}
+	sent := pinsSent(h)
+	if len(sent) != 1 || sent[0].DeviceID != "airplay:aa:bb" || sent[0].Pin != "4821" {
+		t.Fatalf("sent %+v, want 4821 for airplay:aa:bb", sent)
+	}
+	if h.menu.calls != 0 {
+		t.Error("a code given on stdin opened a prompt anyway")
+	}
+}
+
+// The panel writes the code and a newline, but a script might not.
+func TestAStdinCodeWithoutANewlineIsAccepted(t *testing.T) {
+	h := newHarness(t)
+	h.app.In = strings.NewReader("hunter2")
+
+	if code := h.app.Run([]string{"pin", "airplay:aa:bb", "-"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.errOut)
+	}
+	if sent := pinsSent(h); len(sent) != 1 || sent[0].Pin != "hunter2" {
+		t.Fatalf("sent %+v", sent)
+	}
+}
+
+// Every castr before this one sends a literal "-" to the television as the
+// code. That must never happen here: an empty stdin is an error, not a code.
+func TestDashIsNeverSentAsACode(t *testing.T) {
+	for _, in := range []string{"", "\n", "   \n"} {
+		h := newHarness(t)
+		h.app.In = strings.NewReader(in)
+
+		if code := h.app.Run([]string{"pin", "airplay:aa:bb", "-"}); code == 0 {
+			t.Errorf("stdin %q: succeeded with no code", in)
+		}
+		for _, r := range pinsSent(h) {
+			t.Errorf("stdin %q: sent %q to the receiver", in, r.Pin)
+		}
+	}
+}
+
+// A code or password must not turn up in an error message, which lands in
+// logs, terminals and the panel.
+func TestAStdinCodeIsNeverEchoedBack(t *testing.T) {
+	h := newHarness(t)
+	h.daemon.failWith[daemon.CmdPin] = "receiver rejected the credential"
+	h.app.In = strings.NewReader("correct-horse-battery\n")
+
+	h.app.Run([]string{"pin", "airplay:aa:bb", "-"})
+
+	for _, out := range []string{h.out.String(), h.errOut.String()} {
+		if strings.Contains(out, "correct-horse-battery") {
+			t.Fatalf("the secret was printed: %q", out)
+		}
+	}
+}
+
+// A code is a few characters and a password a few dozen. Reading without a
+// limit lets whatever is on the other end of stdin grow this process forever.
+func TestAnEndlessStdinIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.app.In = strings.NewReader(strings.Repeat("x", 1<<20))
+
+	if code := h.app.Run([]string{"pin", "airplay:aa:bb", "-"}); code == 0 {
+		t.Fatal("a megabyte on stdin was accepted as a code")
+	}
+	if sent := pinsSent(h); len(sent) != 0 {
+		t.Fatalf("sent %d bytes as a code", len(sent[0].Pin))
+	}
+}
+
+// The code is written to doubletake's stdin, a line at a time. A second line
+// smuggled in here would arrive as the answer to doubletake's NEXT prompt.
+func TestOnlyTheFirstLineOfStdinIsSent(t *testing.T) {
+	h := newHarness(t)
+	h.app.In = strings.NewReader("4821\nsomething-else\n")
+
+	if code := h.app.Run([]string{"pin", "airplay:aa:bb", "-"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.errOut)
+	}
+	if sent := pinsSent(h); len(sent) != 1 || sent[0].Pin != "4821" {
+		t.Fatalf("sent %+v, want exactly the first line", sent)
+	}
+}
+
+// The panel writes the code and a newline and leaves stdin open, as Omarchy's
+// own network panel does with Wi-Fi passwords. Reading until end-of-file would
+// wait forever for an end that never comes, and the panel would sit on
+// "sending" with the receiver still showing its code.
+func TestTheCodeIsReadWithoutWaitingForStdinToClose(t *testing.T) {
+	h := newHarness(t)
+	r, w := io.Pipe()
+	defer w.Close()
+	h.app.In = r
+	go w.Write([]byte("4821\n")) // and never closed
+
+	done := make(chan int, 1)
+	go func() { done <- h.app.Run([]string{"pin", "airplay:aa:bb", "-"}) }()
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, h.errOut)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("castr pin waited for stdin to close after the code arrived")
+	}
+	if sent := pinsSent(h); len(sent) != 1 || sent[0].Pin != "4821" {
+		t.Fatalf("sent %+v", sent)
 	}
 }
