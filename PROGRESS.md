@@ -21,11 +21,14 @@
 > cheap to revert. Look at the television, not the status line.
 >
 > **Shipped state (2026-10-14):** castr **v0.2.3** on the AUR and installed
-> here; plugin `castr-indicator` **v1.2.1**, also on this laptop's bar. The
-> marketplace's verified snapshot is still v1.1.1. v1.2.1 is under review as
+> here; plugin `castr-indicator` **v1.2.2**, also on this laptop's bar. The
+> marketplace's verified snapshot is still v1.1.1. Under review as
 > [#11503](https://github.com/omacom/omarchy-plugin-marketplace/issues/11503),
-> filed 2026-10-14 -- `validated`, `security-review-required`, no maintainer
-> comment yet (checked 2026-10-14). It supersedes #9978, closed unreviewed.
+> now targeting `da04131` (v1.2.2) -- `validated`, `security-review-required`.
+> The maintainer accepted the stdin fix and found a second problem (an
+> editable TextField pulls the clipboard owner's data into the shared shell);
+> fixed and answered 2026-10-14. It supersedes #9978, closed unreviewed.
+> castr's own package still ships the 1.2.1 widget copy until its next release.
 > **The maintainer closes a request after seven days without a reply**, and
 > castr-watch now alerts on any comment there: answer it within the week.
 >
