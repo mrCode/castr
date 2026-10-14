@@ -14,12 +14,24 @@
 > suspect `prefix` and `AllowFrom` in internal/stream/files.go first — both are
 > cheap to revert. Look at the television, not the status line.
 >
-> **Shipped state (2026-10-04):** castr **v0.2.1** on the AUR and installed
+> **Shipped state (2026-10-14):** castr **v0.2.2** on the AUR and installed
 > here; plugin `castr-indicator` **v1.2.0**, also on this laptop's bar. The
 > marketplace's verified snapshot is still v1.1.1: 1.2.0 runs two more commands
 > (`castr pin`, `castr reset-share`), so it went back for review as
 > [#9978](https://github.com/omacom/omarchy-plugin-marketplace/issues/9978) --
 > `validated`, awaiting a maintainer.
+>
+> **0.2.2 gives a pairing code somewhere to go.** Reported from a friend's
+> machine: every cast to his Apple TV asked for a code and nothing took one, so
+> pairing never finished and it asked again every time. Only the bar panel
+> could take a code; the menu, `castr pin` and the banner could not. Now all
+> of them can -- the banner opens a prompt when clicked, via Omarchy's
+> `omarchy-exec-argv` hint, because Omarchy's shell draws no action buttons.
+> Also fixed: receiver names reached notification bodies unescaped (markup and
+> links render there); pairing_protocol, new in doubletake 0.5.0, was dropped
+> when castr copied a pairing between modes; a half pairing could overwrite a
+> whole one; a malformed credentials file crashed the daemon. Not yet seen: a
+> real pairing round trip on an unpaired Apple TV.
 >
 > **0.2.1 exists because doubletake 0.5.0 broke pairing.** doubletake 0.5.0
 > (2026-10-03) reworded its pairing prompt, and castr 0.2.0 only matched the
