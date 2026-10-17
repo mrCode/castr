@@ -410,14 +410,19 @@ func (b *Backend) Stop(ctx context.Context, device discovery.Device) error {
 	cs, ok := b.sessions[device.ID]
 	if ok {
 		delete(b.sessions, device.ID)
+		// Set here, under the lock and together with the removal -- not
+		// after it. announceCrash reads it under this same lock to tell a
+		// deliberate stop from a crash, and a child that died while stop was
+		// running could read it unset: a false "casting failed" for a stop
+		// that worked, and a second teardown racing the first. The race
+		// detector found it about once in forty runs.
+		cs.stopping = true
 	}
 	b.mu.Unlock()
 
 	if !ok {
 		return errNoSession
 	}
-
-	cs.stopping = true
 
 	// Announced BEFORE the teardown, and this is not cosmetic. The state
 	// machine allows streaming -> stopping -> idle; emitting idle straight from
