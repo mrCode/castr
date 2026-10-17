@@ -29,6 +29,26 @@
 > editable TextField pulls the clipboard owner's data into the shared shell);
 > fixed and answered 2026-10-14. It supersedes #9978, closed unreviewed.
 >
+> **Blocking #11503 now: doubletake's receiver authentication (2026-10-17).**
+> The maintainer's third finding (2026-10-14 12:45 UTC) is in doubletake, not
+> castr: saved pairings never authenticated the receiver (M6 unread, V2 proof
+> discarded, empty V4 accepted, raw verify against /info's pk, transient
+> fallback after a failed verify, credentials chosen by /info deviceID). Fixed
+> in **omarroth/doubletake#67** (branch `fix/authenticate-paired-receiver` in
+> ~/workspace/doubletake, pushed to the mrCode fork); answered on #11503
+> 2026-10-17. Verified only against doubletake-test-receiver (an impostor got
+> 160 frames from upstream, 0 from the branch; 6 profiles x 5 auth modes
+> unchanged). STILL TO DO:
+> 1. **A real Apple TV PIN pairing with the branch** (needs the user to read the
+>    code): `-pair`, then cast again -- the second must not ask.
+> 2. When #67 merges: castr passes `-device-id <mDNS deviceid>` (the part of the
+>    castr id after `airplay:`; skip it when the id is an address fallback),
+>    gated on doubletake supporting the flag, and requires that doubletake.
+>    Local commit 7b32676 (receiver_id / receiver_ed25519_public travel with a
+>    pairing between modes) is unreleased and belongs in that release.
+> 3. Then report back on #11503 with the castr release. Answer any comment there
+>    within seven days.
+>
 > **Rule: the AUR package's widget always matches the released plugin.** castr
 > ships a copy of the widget in /usr/share/castr; a plugin release means a
 > castr release too. 0.2.4 exists only to carry widget 1.2.2. Before tagging,
