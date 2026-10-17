@@ -144,7 +144,8 @@ var LegacyCredsFilenames = map[string]string{
 // pairingFields are the per-receiver keys. Everything else in an entry --
 // restore_token above all -- describes a capture, not a receiver, and must
 // never be copied between modes or carried over from another application.
-var pairingFields = []string{"pairing_id", "ed25519_public", "ed25519_seed", "pairing_protocol"}
+var pairingFields = []string{"pairing_id", "ed25519_public", "ed25519_seed", "pairing_protocol",
+	"receiver_id", "receiver_ed25519_public"}
 
 // identityFields must ALL be present for an entry to hold a usable pairing;
 // doubletake rejects one missing any of them.
@@ -158,6 +159,12 @@ var identityFields = pairingFields[:3]
 // doubletake answers by pairing from scratch -- the television shows a code
 // again. So a field the source lacks is REMOVED from the destination: new keys
 // beside an older pairing's protocol describe a pairing that never existed.
+//
+// receiver_id and receiver_ed25519_public are the receiver's own identity,
+// proven when the pairing was made. A doubletake that authenticates receivers
+// checks every later connection against them, and pairs again -- the
+// television shows a code -- when they are missing. They belong to the same
+// pairing, so they travel with it and are removed with it the same way.
 
 // MergePairing copies pairing keys from src into dst without touching either
 // file's portal tokens, and returns the receivers it added.

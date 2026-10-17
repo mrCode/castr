@@ -550,6 +550,47 @@ func TestAPairingWithNoProtocolClearsAStaleOne(t *testing.T) {
 	}
 }
 
+// A doubletake that authenticates receivers records the receiver's own
+// identity with the pairing, and checks every later connection against it.
+// Left behind, every mode but the one that paired would ask for a code again.
+const pairedTVWithIdentity = `{"AA:BB:CC:DD:EE:FF":{"pairing_id":"id-1","ed25519_public":"pub-1",` +
+	`"ed25519_seed":"seed-1","pairing_protocol":"hap","receiver_id":"tv-id",` +
+	`"receiver_ed25519_public":"tv-key","restore_token":"token-for-mirror"}}`
+
+func TestTheReceiversIdentityTravelsWithThePairing(t *testing.T) {
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), pairedTVWithIdentity)
+
+	if err := SyncPairing(dir, []string{"mirror", "extend"}); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := readCredsMap(t, CredsPath(dir, "extend"))["AA:BB:CC:DD:EE:FF"]
+	if entry["receiver_id"] != "tv-id" || entry["receiver_ed25519_public"] != "tv-key" {
+		t.Errorf("extend got receiver %v / %v, want tv-id / tv-key",
+			entry["receiver_id"], entry["receiver_ed25519_public"])
+	}
+}
+
+// Another receiver's identity beside these keys would make doubletake refuse
+// the real receiver as an impostor.
+func TestAPairingWithoutAReceiverIdentityClearsAStaleOne(t *testing.T) {
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "extend"), pairedTVWithIdentity)
+	putCreds(t, CredsPath(dir, "mirror"), pairedTVWithProtocol) // re-paired, no identity
+
+	if _, err := MergePairing(CredsPath(dir, "mirror"), CredsPath(dir, "extend")); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := readCredsMap(t, CredsPath(dir, "extend"))["AA:BB:CC:DD:EE:FF"]
+	for _, field := range []string{"receiver_id", "receiver_ed25519_public"} {
+		if v, stale := entry[field]; stale {
+			t.Errorf("extend kept %s %v beside keys it was not recorded with", field, v)
+		}
+	}
+}
+
 // doubletake rejects a pairing missing any of its keys. Copying a partial one
 // would replace a working pairing with one that cannot be used.
 func TestAnIncompletePairingIsNotCopied(t *testing.T) {
