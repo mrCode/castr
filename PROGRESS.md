@@ -20,7 +20,7 @@
 > suspect `prefix` and `AllowFrom` in internal/stream/files.go first — both are
 > cheap to revert. Look at the television, not the status line.
 >
-> **Shipped state (2026-10-17):** castr **v0.2.5** on the AUR and installed
+> **Shipped state (2026-10-17):** castr **v0.2.6** on the AUR and installed
 > here; plugin `castr-indicator` **v1.2.2**, also on this laptop's bar. The
 > marketplace's verified snapshot is still v1.1.1. Under review as
 > [#11503](https://github.com/omacom/omarchy-plugin-marketplace/issues/11503),
@@ -36,9 +36,12 @@
 > **The maintainer closes a request after seven days without a reply**, and
 > castr-watch now alerts on any comment there: answer it within the week.
 >
-> **0.2.5 dials the receiver's own AirPlay port** (issue #2, @viko16): castr
+> **0.2.6 dials the receiver's own AirPlay port** (issue #2, @viko16): castr
 > discovered it and dropped it, so receivers off port 7000 -- a REDMI display
-> on 47000 -- could not connect at all.
+> on 47000 -- could not connect at all. It also fixes a data race in Stop()
+> that the race detector caught ~1 run in 40 (a stop could be reported as a
+> crash). **v0.2.5 is tagged on GitHub but was never put on the AUR**: it was
+> tagged before the race was seen, and a published tag is not rewritten.
 >
 > **0.2.3 keeps the pairing code off the command line.** The marketplace
 > closed the 1.2.0 verification (#9978) after a maintainer's finding went
