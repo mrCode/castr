@@ -19,7 +19,7 @@ func TestNeverUsesDaemonMode(t *testing.T) {
 	// silently dropped and the receiver's reverse handshake lands on random
 	// ephemeral ports that a default-DROP firewall discards. Measured: the
 	// same Apple TV stalls under -daemonize and mirrors fine under -target.
-	got := argvString(BuildArgv(config(), "10.0.0.5", ""))
+	got := argvString(BuildArgv(config(), "10.0.0.5", 7000, ""))
 
 	if strings.Contains(got, "-daemonize") {
 		t.Fatalf("argv uses daemon mode: %q", got)
@@ -32,7 +32,7 @@ func TestNeverUsesDaemonMode(t *testing.T) {
 func TestPortRangeIsAlwaysPassed(t *testing.T) {
 	// Without it the receiver connects back on ephemeral ports no firewall
 	// rule can anticipate, and AirPlay hangs with no error.
-	got := argvString(BuildArgv(config(), "10.0.0.5", ""))
+	got := argvString(BuildArgv(config(), "10.0.0.5", 7000, ""))
 
 	if !strings.Contains(got, "-port-range 60000-60010") {
 		t.Errorf("argv = %q, want the configured port range", got)
@@ -50,7 +50,7 @@ func TestEncoderVocabularyIsTranslated(t *testing.T) {
 		cfg := config()
 		cfg.Encoder = encoder
 
-		got := argvString(BuildArgv(cfg, "10.0.0.5", ""))
+		got := argvString(BuildArgv(cfg, "10.0.0.5", 7000, ""))
 
 		if !strings.Contains(got, "-hwaccel "+want) {
 			t.Errorf("encoder %q gave %q, want -hwaccel %s", encoder, got, want)
@@ -62,7 +62,7 @@ func TestOptionalFlagsAreOmittedWhenUnset(t *testing.T) {
 	cfg := config()
 	cfg.Bitrate = 0
 
-	got := argvString(BuildArgv(cfg, "10.0.0.5", ""))
+	got := argvString(BuildArgv(cfg, "10.0.0.5", 7000, ""))
 
 	if strings.Contains(got, "-bitrate") {
 		t.Errorf("argv = %q, want no -bitrate when it is zero", got)
@@ -76,10 +76,10 @@ func TestAudioIsDisabledOnlyWhenAskedFor(t *testing.T) {
 	cfg := config()
 	cfg.Audio = false
 
-	if !strings.Contains(argvString(BuildArgv(cfg, "10.0.0.5", "")), "-no-audio") {
+	if !strings.Contains(argvString(BuildArgv(cfg, "10.0.0.5", 7000, "")), "-no-audio") {
 		t.Error("want -no-audio when audio is off")
 	}
-	if strings.Contains(argvString(BuildArgv(config(), "10.0.0.5", "")), "-no-audio") {
+	if strings.Contains(argvString(BuildArgv(config(), "10.0.0.5", 7000, "")), "-no-audio") {
 		t.Error("want audio streamed by default")
 	}
 }
@@ -87,7 +87,7 @@ func TestAudioIsDisabledOnlyWhenAskedFor(t *testing.T) {
 func TestCredentialsPathIsPassedWhenGiven(t *testing.T) {
 	// Each mode captures a different virtual output, so each needs its own
 	// token. Reusing the default would replay one pointing at the real panel.
-	got := argvString(BuildArgv(config(), "10.0.0.5", "/state/mirror.json"))
+	got := argvString(BuildArgv(config(), "10.0.0.5", 7000, "/state/mirror.json"))
 
 	if !strings.Contains(got, "-creds /state/mirror.json") {
 		t.Errorf("argv = %q, want the credentials path", got)
@@ -217,5 +217,37 @@ func TestTailIsWhitespaceNormalised(t *testing.T) {
 
 	if got := s.Tail(200); strings.Contains(got, "\n") || strings.Contains(got, "  ") {
 		t.Errorf("Tail() = %q, want a flat single-spaced line", got)
+	}
+}
+
+// Reported against a REDMI display (issue #2): it advertises AirPlay on port
+// 47000 and refuses connections on 7000. castr discovered the port and never
+// passed it on, so doubletake dialled its default of 7000 and the cast failed
+// before pairing even began.
+func TestTheDiscoveredPortReachesDoubletake(t *testing.T) {
+	argv := strings.Join(BuildArgv(Config{PortRange: "60000-60010", FPS: 30}, "192.168.1.50", 47000, ""), " ")
+	if !strings.Contains(argv, "-port 47000") {
+		t.Errorf("argv %q does not carry the receiver's port", argv)
+	}
+}
+
+// A receiver whose port castr never learned leaves doubletake on its own
+// default rather than dialling port 0.
+func TestAnUnknownPortLeavesDoubletakesDefault(t *testing.T) {
+	for _, argv := range BuildArgv(Config{PortRange: "60000-60010", FPS: 30}, "192.168.1.50", 0, "") {
+		if argv == "-port" {
+			t.Fatal("an unknown port was passed to doubletake")
+		}
+	}
+}
+
+// -port is not -port-range. The receiver's own port and the range it calls
+// back into are different things, and confusing them would break both.
+func TestThePortIsNotConfusedWithThePortRange(t *testing.T) {
+	argv := BuildArgv(Config{PortRange: "60000-60010", FPS: 30}, "192.168.1.50", 47000, "")
+	for i, a := range argv {
+		if a == "-port-range" && (i+1 >= len(argv) || argv[i+1] != "60000-60010") {
+			t.Errorf("the port range became %q", argv[i+1])
+		}
 	}
 }

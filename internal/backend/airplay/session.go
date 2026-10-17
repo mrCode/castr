@@ -132,7 +132,7 @@ func (b *Backend) Start(ctx context.Context, device discovery.Device, mode strin
 		return err
 	}
 
-	proc, err := b.Spawn(ctx, BuildArgv(b.Config, device.Address, credsPath))
+	proc, err := b.Spawn(ctx, BuildArgv(b.Config, device.Address, device.Port, credsPath))
 	if err != nil {
 		b.undo(cs)
 		msg := fmt.Sprintf("%s failed to start: %v", Binary, err)

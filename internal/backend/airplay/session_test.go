@@ -865,3 +865,25 @@ func TestAFailureIsNotAnnouncedAsACleanStop(t *testing.T) {
 		}
 	}
 }
+
+// The port has to survive the trip from discovery to the spawned command, not
+// just appear in BuildArgv's output: issue #2 was a port discovered, carried
+// on the device, and dropped at exactly this hand-off.
+func TestStartingACastDialsTheReceiversOwnPort(t *testing.T) {
+	h := newHarness(t, readyOutput)
+	redmi := device("redmi", "REDMI display")
+	redmi.Port = 47000
+
+	if err := h.backend.Start(context.Background(), redmi, session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.argvs) == 0 {
+		t.Fatal("doubletake was never started")
+	}
+	if got := strings.Join(h.argvs[0], " "); !strings.Contains(got, "-port 47000") {
+		t.Errorf("doubletake was started without the receiver's port:\n%s", got)
+	}
+}

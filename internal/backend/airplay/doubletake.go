@@ -72,7 +72,11 @@ var hwaccel = map[string]string{
 //
 //	-daemonize   UDP 36760-36762, TCP 45771   -> stalls, fails
 //	-target      UDP 60000-60002, TCP 60003   -> mirrors successfully
-func BuildArgv(cfg Config, address, credsPath string) []string {
+//
+// port is the receiver's AirPlay port as discovered. Most listen on 7000,
+// doubletake's default, but not all: a REDMI display advertises 47000 and
+// refuses 7000 (issue #2). 0 means unknown and leaves doubletake's default.
+func BuildArgv(cfg Config, address string, port int, credsPath string) []string {
 	accel, ok := hwaccel[cfg.Encoder]
 	if !ok {
 		accel = "auto"
@@ -84,6 +88,9 @@ func BuildArgv(cfg Config, address, credsPath string) []string {
 		"-port-range", cfg.PortRange,
 		"-fps", strconv.Itoa(cfg.FPS),
 		"-hwaccel", accel,
+	}
+	if port > 0 {
+		argv = append(argv, "-port", strconv.Itoa(port))
 	}
 
 	if cfg.Bitrate > 0 {
