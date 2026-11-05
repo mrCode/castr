@@ -46,7 +46,13 @@
 >    gated on doubletake supporting the flag, and requires that doubletake.
 >    Local commit 7b32676 (receiver_id / receiver_ed25519_public travel with a
 >    pairing between modes) is unreleased and belongs in that release.
-> 3. Then report back on #11503 with the castr release. Answer any comment there
+> 3. Then report back on #11503 with the castr release.
+>
+> **Upstream is quiet (checked 2026-11-05):** nothing merged since 2026-10-04,
+> five PRs unanswered, no response on #67. Pinged #67 on 2026-11-05. **If still
+> nothing by ~2026-11-12, plan B:** castr's PKGBUILD builds doubletake from the
+> mrCode fork's branch instead of `doubletake-git`, and that release goes to
+> #11503. Do the real Apple TV pairing first either way. Answer any comment there
 >    within seven days.
 >
 > **Rule: the AUR package's widget always matches the released plugin.** castr
