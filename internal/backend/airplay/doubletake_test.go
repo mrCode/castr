@@ -19,7 +19,7 @@ func TestNeverUsesDaemonMode(t *testing.T) {
 	// silently dropped and the receiver's reverse handshake lands on random
 	// ephemeral ports that a default-DROP firewall discards. Measured: the
 	// same Apple TV stalls under -daemonize and mirrors fine under -target.
-	got := argvString(BuildArgv(config(), "10.0.0.5", 7000, ""))
+	got := argvString(BuildArgv(config(), "", "10.0.0.5", 7000, ""))
 
 	if strings.Contains(got, "-daemonize") {
 		t.Fatalf("argv uses daemon mode: %q", got)
@@ -32,7 +32,7 @@ func TestNeverUsesDaemonMode(t *testing.T) {
 func TestPortRangeIsAlwaysPassed(t *testing.T) {
 	// Without it the receiver connects back on ephemeral ports no firewall
 	// rule can anticipate, and AirPlay hangs with no error.
-	got := argvString(BuildArgv(config(), "10.0.0.5", 7000, ""))
+	got := argvString(BuildArgv(config(), "", "10.0.0.5", 7000, ""))
 
 	if !strings.Contains(got, "-port-range 60000-60010") {
 		t.Errorf("argv = %q, want the configured port range", got)
@@ -50,7 +50,7 @@ func TestEncoderVocabularyIsTranslated(t *testing.T) {
 		cfg := config()
 		cfg.Encoder = encoder
 
-		got := argvString(BuildArgv(cfg, "10.0.0.5", 7000, ""))
+		got := argvString(BuildArgv(cfg, "", "10.0.0.5", 7000, ""))
 
 		if !strings.Contains(got, "-hwaccel "+want) {
 			t.Errorf("encoder %q gave %q, want -hwaccel %s", encoder, got, want)
@@ -62,7 +62,7 @@ func TestOptionalFlagsAreOmittedWhenUnset(t *testing.T) {
 	cfg := config()
 	cfg.Bitrate = 0
 
-	got := argvString(BuildArgv(cfg, "10.0.0.5", 7000, ""))
+	got := argvString(BuildArgv(cfg, "", "10.0.0.5", 7000, ""))
 
 	if strings.Contains(got, "-bitrate") {
 		t.Errorf("argv = %q, want no -bitrate when it is zero", got)
@@ -76,10 +76,10 @@ func TestAudioIsDisabledOnlyWhenAskedFor(t *testing.T) {
 	cfg := config()
 	cfg.Audio = false
 
-	if !strings.Contains(argvString(BuildArgv(cfg, "10.0.0.5", 7000, "")), "-no-audio") {
+	if !strings.Contains(argvString(BuildArgv(cfg, "", "10.0.0.5", 7000, "")), "-no-audio") {
 		t.Error("want -no-audio when audio is off")
 	}
-	if strings.Contains(argvString(BuildArgv(config(), "10.0.0.5", 7000, "")), "-no-audio") {
+	if strings.Contains(argvString(BuildArgv(config(), "", "10.0.0.5", 7000, "")), "-no-audio") {
 		t.Error("want audio streamed by default")
 	}
 }
@@ -87,7 +87,7 @@ func TestAudioIsDisabledOnlyWhenAskedFor(t *testing.T) {
 func TestCredentialsPathIsPassedWhenGiven(t *testing.T) {
 	// Each mode captures a different virtual output, so each needs its own
 	// token. Reusing the default would replay one pointing at the real panel.
-	got := argvString(BuildArgv(config(), "10.0.0.5", 7000, "/state/mirror.json"))
+	got := argvString(BuildArgv(config(), "", "10.0.0.5", 7000, "/state/mirror.json"))
 
 	if !strings.Contains(got, "-creds /state/mirror.json") {
 		t.Errorf("argv = %q, want the credentials path", got)
@@ -225,7 +225,7 @@ func TestTailIsWhitespaceNormalised(t *testing.T) {
 // passed it on, so doubletake dialled its default of 7000 and the cast failed
 // before pairing even began.
 func TestTheDiscoveredPortReachesDoubletake(t *testing.T) {
-	argv := strings.Join(BuildArgv(Config{PortRange: "60000-60010", FPS: 30}, "192.168.1.50", 47000, ""), " ")
+	argv := strings.Join(BuildArgv(Config{PortRange: "60000-60010", FPS: 30}, "", "192.168.1.50", 47000, ""), " ")
 	if !strings.Contains(argv, "-port 47000") {
 		t.Errorf("argv %q does not carry the receiver's port", argv)
 	}
@@ -234,7 +234,7 @@ func TestTheDiscoveredPortReachesDoubletake(t *testing.T) {
 // A receiver whose port castr never learned leaves doubletake on its own
 // default rather than dialling port 0.
 func TestAnUnknownPortLeavesDoubletakesDefault(t *testing.T) {
-	for _, argv := range BuildArgv(Config{PortRange: "60000-60010", FPS: 30}, "192.168.1.50", 0, "") {
+	for _, argv := range BuildArgv(Config{PortRange: "60000-60010", FPS: 30}, "", "192.168.1.50", 0, "") {
 		if argv == "-port" {
 			t.Fatal("an unknown port was passed to doubletake")
 		}
@@ -244,10 +244,51 @@ func TestAnUnknownPortLeavesDoubletakesDefault(t *testing.T) {
 // -port is not -port-range. The receiver's own port and the range it calls
 // back into are different things, and confusing them would break both.
 func TestThePortIsNotConfusedWithThePortRange(t *testing.T) {
-	argv := BuildArgv(Config{PortRange: "60000-60010", FPS: 30}, "192.168.1.50", 47000, "")
+	argv := BuildArgv(Config{PortRange: "60000-60010", FPS: 30}, "", "192.168.1.50", 47000, "")
 	for i, a := range argv {
 		if a == "-port-range" && (i+1 >= len(argv) || argv[i+1] != "60000-60010") {
 			t.Errorf("the port range became %q", argv[i+1])
 		}
+	}
+}
+
+// castr-airplay refuses a device at the address that names itself as some
+// other receiver while the one castr means has a saved pairing -- but only if
+// castr says which receiver it means. Without -device-id an impersonator could
+// name itself as a receiver never seen before and be paired with from scratch.
+func TestTheReceiversOwnDeviceIDIsPassed(t *testing.T) {
+	argv := BuildArgv(config(), "airplay:AA:BB:CC:DD:EE:FF", "10.0.0.5", 7000, "")
+	if !strings.Contains(argvString(argv), "-device-id AA:BB:CC:DD:EE:FF") {
+		t.Fatalf("argv %q does not name the receiver meant", argv)
+	}
+}
+
+// A receiver that advertised no device ID is known to castr by its address,
+// and an address says nothing about which device answers there.
+func TestNoDeviceIDIsInventedFromAnAddressOrAnotherProtocol(t *testing.T) {
+	for _, id := range []string{"airplay:10.0.0.5", "airplay:", "", "chromecast:8a308a938ce275d9"} {
+		if got := argvString(BuildArgv(config(), id, "10.0.0.5", 7000, "")); strings.Contains(got, "-device-id") {
+			t.Errorf("id %q: argv %q passes a device ID", id, got)
+		}
+	}
+}
+
+// Nothing on PATH stands in for castr's own helper: a doubletake found there
+// need not authenticate receivers at all.
+func TestTheHelperIsCastrsOwnNotWhateverIsOnPath(t *testing.T) {
+	if got := binary(func(string) string { return "" }); got != "/usr/lib/castr/castr-airplay" {
+		t.Errorf("helper = %q, want castr's own /usr/lib/castr/castr-airplay", got)
+	}
+	override := func(k string) string {
+		if k == "CASTR_AIRPLAY" {
+			return "/home/me/src/doubletake/castr-airplay"
+		}
+		return ""
+	}
+	if got := binary(override); got != "/home/me/src/doubletake/castr-airplay" {
+		t.Errorf("with CASTR_AIRPLAY set, helper = %q", got)
+	}
+	if argv := BuildArgv(config(), "", "10.0.0.5", 7000, ""); argv[0] != Binary {
+		t.Errorf("argv[0] = %q, want the helper %q", argv[0], Binary)
 	}
 }

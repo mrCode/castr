@@ -1,17 +1,36 @@
-// Package airplay supervises doubletake, which does the actual AirPlay work.
+// Package airplay supervises castr-airplay, which does the actual AirPlay work.
 //
-// castr does not implement AirPlay. It runs one doubletake child per session,
-// reads its output to learn what happened, and cleans up after it.
+// castr-airplay is doubletake, built by castr's own package from castr's branch
+// of it (github.com/mrCode/doubletake, tags castr-airplay-*) and installed
+// where nothing else looks. castr ships it rather than depending on whatever
+// doubletake is installed because castr's security depends on it: doubletake
+// upstream does not authenticate a receiver it has paired with, and the fix
+// (omarroth/doubletake#67) had no answer for weeks. One child runs per
+// session; castr reads its output to learn what happened, and cleans up after
+// it.
 package airplay
 
 import (
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 )
 
-// Binary is the program we supervise.
-const Binary = "doubletake"
+// helperPath is where castr's package installs castr-airplay.
+const helperPath = "/usr/lib/castr/castr-airplay"
+
+// Binary is the program we supervise. CASTR_AIRPLAY overrides it, for running
+// castr from a source checkout; nothing on PATH is ever picked up in its
+// place, since any doubletake found there need not authenticate receivers.
+var Binary = binary(os.Getenv)
+
+func binary(getenv func(string) string) string {
+	if path := getenv("CASTR_AIRPLAY"); path != "" {
+		return path
+	}
+	return helperPath
+}
 
 // ReadyMarker is the ONLY line that means pixels are flowing.
 //
@@ -76,7 +95,14 @@ var hwaccel = map[string]string{
 // port is the receiver's AirPlay port as discovered. Most listen on 7000,
 // doubletake's default, but not all: a REDMI display advertises 47000 and
 // refuses 7000 (issue #2). 0 means unknown and leaves doubletake's default.
-func BuildArgv(cfg Config, address string, port int, credsPath string) []string {
+//
+// deviceID is castr's id for the receiver. Its AirPlay device ID -- what the
+// receiver advertised over mDNS when castr found it -- is passed as -device-id,
+// so the receiver's saved pairing applies even if whatever answers at the
+// address names itself differently, and such a device is refused. Without it,
+// an impersonator could name itself as a receiver never seen before and be
+// paired with from scratch.
+func BuildArgv(cfg Config, deviceID, address string, port int, credsPath string) []string {
 	accel, ok := hwaccel[cfg.Encoder]
 	if !ok {
 		accel = "auto"
@@ -113,8 +139,23 @@ func BuildArgv(cfg Config, address string, port int, credsPath string) []string 
 	if credsPath != "" {
 		argv = append(argv, "-creds", credsPath)
 	}
+	if id := airPlayDeviceID(deviceID, address); id != "" {
+		argv = append(argv, "-device-id", id)
+	}
 
 	return argv
+}
+
+// airPlayDeviceID is the receiver's advertised device ID within castr's id,
+// "airplay:<deviceid>". A receiver that advertised none is known by its
+// address instead, which says nothing about which device it is, so nothing
+// is passed.
+func airPlayDeviceID(deviceID, address string) string {
+	id, ok := strings.CutPrefix(deviceID, "airplay:")
+	if !ok || id == "" || id == address {
+		return ""
+	}
+	return id
 }
 
 // maxBuffer bounds what we keep of a child's output. Enough for a diagnostic

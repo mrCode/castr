@@ -3,9 +3,9 @@
 Mirror your Hyprland desktop to an Apple TV or a Chromecast — or extend onto an
 Apple TV as a second monitor — from your desktop's menu, with a bar indicator.
 
-Two small static binaries -- a client and a daemon. `avahi` for discovery,
-`hyprctl` for outputs, and then whichever backend you actually use: `doubletake`
-for AirPlay, GStreamer for Chromecast. Nothing else at runtime, and never both.
+Static binaries -- a client, a daemon, and `castr-airplay`, castr's own build
+of [doubletake](https://github.com/omarroth/doubletake) for AirPlay. `avahi`
+for discovery, `hyprctl` for outputs, GStreamer to capture and encode.
 
 > **Status: released, verified on hardware.** v0.2.0 is on the AUR. Mirror and
 > extend have both been cast to a real Apple TV, and mirror to a real Chromecast
@@ -77,27 +77,21 @@ on each connection no matter what castr remembers — choose **First Time Only**
 yay -S castr
 ```
 
-What else you need depends on which receiver you cast to. Neither backend's
-dependencies are pulled in automatically, and castr tells you which one is
-missing rather than failing obscurely.
+Both backends come with the package; nothing else is needed. For hardware
+encoding on Intel or AMD, also install `gst-plugin-va`.
 
-**For an Apple TV**, `doubletake` is what actually speaks AirPlay:
-
-```bash
-yay -S doubletake-git
-```
-
-Version 0.4.0 cannot capture on Hyprland; use `doubletake-git`.
+**For an Apple TV**, `castr-airplay` speaks AirPlay. It is doubletake, built
+by castr's package from [castr's branch](https://github.com/mrCode/doubletake/tree/castr)
+and installed in `/usr/lib/castr`, where nothing else looks. castr ships its own
+rather than using whichever doubletake is installed because doubletake upstream
+does not check that an Apple TV it has paired with really is that Apple TV:
+another device on the network answering at its address receives your screen.
+castr's branch checks, and refuses one that cannot prove it; the fix is offered
+upstream as [omarroth/doubletake#67](https://github.com/omarroth/doubletake/pull/67).
+`doubletake-git` is not used.
 
 **For a Chromecast**, nothing speaks it but castr — the capture, the encoding
-and the HTTP server are all castr's own, built on GStreamer:
-
-```bash
-sudo pacman -S gst-plugin-pipewire gst-plugins-base gst-plugins-good gst-plugins-bad gst-libav gst-plugin-va
-```
-
-`doubletake` is not involved in a Chromecast cast, and GStreamer is not
-involved in an AirPlay one.
+and the HTTP server are all castr's own, built on GStreamer.
 
 Your firewall has to let the receiver reach this machine. An Apple TV connects
 **back** into a port range; a Chromecast fetches the stream from port 8010,
