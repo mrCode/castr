@@ -55,6 +55,32 @@
 > #11503. Do the real Apple TV pairing first either way. Answer any comment there
 >    within seven days.
 >
+> **2026-11-05: castr 0.3.0 built, NOT released — AirPlay screen capture is
+> broken on this machine, for 0.2.6 too.** The user decided castr stops
+> depending on upstream doubletake: castr 0.3.0 (local commit 3fed88f, unpushed)
+> bundles `castr-airplay` = mrCode/doubletake branch `castr` (pushed; untagged;
+> will be tag `castr-airplay-1`), installed at /usr/lib/castr/castr-airplay,
+> passes `-device-id`. Plugin 1.3.0 is synced in ~/workspace/castr-indicator but
+> uncommitted. PKGBUILD has placeholder sha256s.
+>
+> Verified on the real Apple TV with 0.3.0-dev: pairing asked for the code once,
+> then verified without asking; saved identity; synthetic video (`-test`)
+> streamed and showed on the TV. **Real screen capture gives a black/frozen
+> picture with 0 bytes on the wire** — identical with installed 0.2.6 +
+> doubletake-git 5e2f1cb, and with castrd started from the user's own session
+> (not just from the Claude app), so it is NOT caused by 0.3.0. xdph logs
+> `Out of buffers` / `Retrying screencopy` from the first frame. Journal shows
+> the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
+> (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
+> gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
+> NEXT: reproduce against doubletake-test-receiver (rebuild it — /tmp/claude-1000/e2e
+> is gone) with `GST_DEBUG=pipewiresrc:5,...` and `GST_DEBUG_FILE`; the user must
+> answer the share dialog. Find which element stops pulling. Fix it in the
+> castr branch, then release 0.3.0 + plugin 1.3.0 and update #11503.
+> Note: running 0.2.6/doubletake-git strips receiver_id from the creds files;
+> 0.3.0 re-pairs once. Don't start castrd from the Claude app's shell for
+> real tests: the portal attributes it to com.anthropic.Claude.
+>
 > **Rule: the AUR package's widget always matches the released plugin.** castr
 > ships a copy of the widget in /usr/share/castr; a plugin release means a
 > castr release too. 0.2.4 exists only to carry widget 1.2.2. Before tagging,
