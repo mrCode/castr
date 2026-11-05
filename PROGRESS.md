@@ -50,7 +50,7 @@
 >
 > **Upstream is quiet (checked 2026-11-05):** nothing merged since 2026-10-04,
 > five PRs unanswered, no response on #67. Pinged #67 on 2026-11-05. **If still
-> nothing by ~2026-11-12, plan B:** castr's PKGBUILD builds doubletake from the
+> nothing by ~2026-11-12, proposed plan B (not yet agreed; ask first):** castr's PKGBUILD builds doubletake from the
 > mrCode fork's branch instead of `doubletake-git`, and that release goes to
 > #11503. Do the real Apple TV pairing first either way. Answer any comment there
 >    within seven days.
