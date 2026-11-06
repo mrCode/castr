@@ -57,10 +57,14 @@ func newFakePulse() *fakePulse {
 	f.addSink(realSink, 0)
 	// Modules that are not castr's. Neither may ever be unloaded. The first
 	// has PipeWire's multi-line args, as `pactl list short modules` prints.
+	// The second is the user's own loopback, playing into the real sink; its
+	// stream is not an app's, and castr must never move it.
+	userLoop := f.modID()
 	f.modules = append(f.modules,
 		fakeModule{id: 1, name: "libpipewire-module-rt", args: "{\n            nice.level    = -11\n            rt.prio       = 88\n        }"},
-		fakeModule{id: f.modID(), name: "module-loopback", args: "source=mic.monitor sink=" + realSink + " latency_msec=60"},
+		fakeModule{id: userLoop, name: "module-loopback", args: "source=mic.monitor sink=" + realSink + " latency_msec=60"},
 	)
+	f.inputs = append(f.inputs, fakeInput{index: f.id(), sink: f.sinkID(realSink), owner: userLoop})
 	f.addApp(realSink)
 	f.addApp(realSink)
 	return f
@@ -346,7 +350,7 @@ func (f *fakePulse) checkLoopbacksNeverMove(t *testing.T) {
 func (f *fakePulse) checkNoFeedback(t *testing.T) {
 	t.Helper()
 	for _, i := range f.inputs {
-		if i.owner != 0 && i.sink == f.sinkID("castr_mix") {
+		if m, ok := f.moduleByID(i.owner); ok && isCastrModule(m.args) && i.sink == f.sinkID("castr_mix") {
 			t.Errorf("castr's own loopback stream %d plays into castr_mix", i.index)
 		}
 	}
@@ -371,6 +375,20 @@ func (f *fakePulse) appSinks() []string {
 		}
 	}
 	return out
+}
+
+// userLoopOn checks the user's own loopback stream still plays where it did.
+func (f *fakePulse) userLoopOn(t *testing.T, sink string) {
+	t.Helper()
+	for _, i := range f.inputs {
+		if m, ok := f.moduleByID(i.owner); ok && moduleArg(m.args, "source") == "mic.monitor" {
+			if got := f.sinkName(i.sink); got != sink {
+				t.Errorf("the user's own loopback stream was moved to %s, want it on %s", got, sink)
+			}
+			return
+		}
+	}
+	t.Error("the user's own loopback stream is gone")
 }
 
 func (f *fakePulse) allAppsOn(t *testing.T, sink string) {
@@ -469,6 +487,56 @@ func TestAttachRoutesTheLaptopIntoCastrAndTheCastStartsOnTV(t *testing.T) {
 	if s := readState(t, dir); s["previous_default"] != realSink || s["laptop_sink"] != realSink {
 		t.Errorf("state %v, want both sinks %s", s, realSink)
 	}
+}
+
+func TestOnlyTheDefaultOutputsAppsMoveIntoCastr(t *testing.T) {
+	// A call app the user put on a headset while music plays on the
+	// speakers stays on the headset, and a stream another module owns -- a
+	// combine-sink's, a user's own loopback -- is never moved: moved into
+	// castr_mix it could feed back, and moved "back" it could feed its own
+	// sink. At the end each stream is where it was.
+	f := newFakePulse()
+	f.addSink("headset", 0)
+	call := f.addApp("headset")
+	dir := t.TempDir()
+	r := NewRouter(f.run, dir)
+
+	mustAttach(t, r, "airplay:A")
+	mustAttach(t, r, "airplay:B")
+	mustSet(t, r, "airplay:A", Both)
+
+	for _, i := range f.inputs {
+		switch {
+		case i.index == call:
+			if s := f.sinkName(i.sink); s != "headset" {
+				t.Errorf("the call on the headset was moved to %s", s)
+			}
+		case i.owner == 0:
+			if s := f.sinkName(i.sink); s != "castr_mix" {
+				t.Errorf("an app on the default output is on %s, want castr_mix", s)
+			}
+		}
+	}
+	f.userLoopOn(t, realSink)
+	f.checkNoFeedback(t)
+
+	if err := r.Detach("airplay:A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Detach("airplay:B"); err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range f.inputs {
+		want := realSink
+		if i.index == call {
+			want = "headset"
+		}
+		if i.owner == 0 && f.sinkName(i.sink) != want {
+			t.Errorf("after the cast app stream %d is on %s, want %s", i.index, f.sinkName(i.sink), want)
+		}
+	}
+	f.userLoopOn(t, realSink)
+	stateGone(t, dir)
 }
 
 func TestEveryCastrSinkIsSetToFullVolumeAndUnmuted(t *testing.T) {
@@ -739,7 +807,7 @@ func TestFollowAdoptsANewDefaultOutput(t *testing.T) {
 			t.Errorf("the new app stream is on %s, want castr_mix", f.sinkName(i.sink))
 		}
 		if i.owner != 0 && i.sink == f.sinkID("castr_mix") {
-			t.Errorf("castr's own loopback stream %d was moved onto castr_mix", i.index)
+			t.Errorf("module-owned stream %d was moved onto castr_mix", i.index)
 		}
 	}
 	if s := readState(t, dir); s["laptop_sink"] != "bluez_x" || s["previous_default"] != realSink {

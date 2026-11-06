@@ -53,9 +53,11 @@ func (r *Router) Attach(castID string) (string, error) {
 		if err := r.takeOver(); err != nil {
 			return "", errors.Join(err, r.restoreLocked())
 		}
-	}
-	if err := moveAppsOnto(r.run, mixSink, -1); err != nil {
-		return "", r.failAttach(first, err)
+		// Only what plays on the default: a stream the user put on another
+		// output stays there, and is not sent to the TV.
+		if err := moveAppsOnto(r.run, mixSink, r.previous); err != nil {
+			return "", r.failAttach(first, err)
+		}
 	}
 
 	r.lastN++
@@ -321,12 +323,11 @@ func (r *Router) follow(sinks []sink) error {
 		return nil
 	}
 	// Kept until it succeeds, so a failed move is retried on the next call.
-	id, ok := sinkID(sinks, r.sweep)
-	if !ok {
+	if _, ok := sinkID(sinks, r.sweep); !ok {
 		r.sweep = ""
 		return nil
 	}
-	if err := moveAppsOnto(r.run, mixSink, id); err != nil {
+	if err := moveAppsOnto(r.run, mixSink, r.sweep); err != nil {
 		return err
 	}
 	r.sweep = ""
@@ -396,7 +397,7 @@ func (r *Router) restoreLocked() error {
 //  2. set the default to laptop, the output the user was last using, or to
 //     previous if laptop is gone -- only ever to an output that still exists;
 //     with neither left, the session manager's own choice stands;
-//  3. move the streams on castr_mix to the new default;
+//  3. move the app streams on castr_mix to the new default;
 //  4. unload castr's outputs;
 //  5. delete the state file.
 func restore(run Runner, stateDir, laptop, previous string) error {
@@ -440,8 +441,8 @@ func restore(run Runner, stateDir, laptop, previous string) error {
 	}
 	// With no real default to move to, unloading castr_mix below hands its
 	// streams to the session manager's fallback.
-	if mixID, ok := sinkID(present, mixSink); ok && target != "" {
-		errs = append(errs, moveAppsOnto(run, target, mixID))
+	if _, ok := sinkID(present, mixSink); ok && target != "" {
+		errs = append(errs, moveAppsOnto(run, target, mixSink))
 	}
 
 	for _, id := range sinks {

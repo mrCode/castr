@@ -261,12 +261,14 @@ func moveSinkInput(run Runner, index int, sink string) error {
 	return err
 }
 
-// moveAppsOnto moves app streams onto target. Streams castr's own modules own
-// -- the loopbacks -- stay put: moving a loopback into castr_mix would feed
-// castr_mix back into itself. from limits the move to streams on one sink;
-// -1 means every sink. A stream that ends between the listing and the move
-// is not an error worth failing over.
-func moveAppsOnto(run Runner, target string, from int) error {
+// moveAppsOnto moves the app streams on from onto target. A stream a module
+// owns is never an app's and stays put: castr's own loopbacks would feed
+// castr_mix back into itself, and another module's -- a combine-sink's, the
+// user's own loopback -- could feed back through castr, or into its own sink
+// when moved back. Streams on any other output stay where the user put
+// them. A stream that ends between the listing and the move is not an error
+// worth failing over.
+func moveAppsOnto(run Runner, target, from string) error {
 	sinks, err := listSinks(run)
 	if err != nil {
 		return err
@@ -275,17 +277,16 @@ func moveAppsOnto(run Runner, target string, from int) error {
 	if !ok {
 		return fmt.Errorf("output %s is gone", target)
 	}
-	mods, err := listModules(run)
-	if err != nil {
-		return err
+	fromID, ok := sinkID(sinks, from)
+	if !ok || fromID == targetID {
+		return nil // nothing is on an output that has gone
 	}
-	ours := castrModuleIDs(mods)
 	inputs, err := listSinkInputs(run)
 	if err != nil {
 		return err
 	}
 	for _, in := range inputs {
-		if ours[in.owner] || in.sink == targetID || (from >= 0 && in.sink != from) {
+		if in.owner >= 0 || in.sink != fromID {
 			continue
 		}
 		_ = moveSinkInput(run, in.index, target)
