@@ -73,6 +73,39 @@
 > the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
 > (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
 > gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
+> **2026-11-06: security review before release, and the fixes.** At the
+> user's request, castr's unpushed changes and the helper branch went through
+> a security review, an independent check of each finding, fixes, a second
+> review and a re-review. Fixed:
+> - castr passed an invented `-device-id manual:<addr>` for receivers added by
+>   address (0aa3cf5). The helper now binds a receiver to the address it was
+>   paired or verified at (`receiver_address`).
+> - castr's mode sync let an old pairing without an identity wipe a newer,
+>   authenticated one (51e5721, b2349d8, 4bac961).
+> - The helper sent the video key in the clear on unencrypted (raw) control
+>   channels (b17e8eb). It is refused when there is no FairPlay key.
+> - The helper chose which kind of code to pair again with from /info, and
+>   sent a Digest of the preset code before the receiver proved itself
+>   (b0ea9fc, ee3a57a). The kind is saved (`pairing_code`), and the code is
+>   held back until the receiver has proven itself.
+> - Raw entries saved before identities are paired again raw only. Raw
+>   receivers keep no pairing between connections, so nothing is pinned
+>   (5e7fa8a, 65eab06).
+>
+> Office TV: 5 minutes with audio, verified with no code, address recorded.
+> Helper tag `castr-airplay-1` = 65eab06.
+> Known limits, not fixed:
+> - Raw receivers that advertise feature 27 use an unmixed FairPlay key.
+> - castr cannot pass `-pair` or `-no-encrypt`, so the helper's advice in
+>   those refusals isn't something a castr user can follow.
+> - A receiver that sends a Digest challenge on /info or pair-verify would
+>   break. None is known.
+> - Raw receivers without FairPlay are refused.
+> - Not tested on any non-Apple receiver.
+> NEXT after release: an option to mute the laptop's own output while casting
+> (the user asked for it on 2026-11-06). Today audio plays on both, because
+> the helper copies the default sink's monitor.
+>
 > **2026-11-06: the freeze is found and fixed** (doubletake `castr` branch
 > 4ab072a, unpushed). pipewiresrc provides the pipeline clock by default, and
 > that clock follows the PipeWire stream. When the portal pauses and
