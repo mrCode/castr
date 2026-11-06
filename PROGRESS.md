@@ -73,6 +73,26 @@
 > the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
 > (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
 > gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
+> **2026-11-06: RELEASED castr 0.3.0** (tag v0.3.0; AUR 0.3.0-1, AUR commit
+> 49da5f1), with helper `castr-airplay-1` (mrCode/doubletake 65eab06) and plugin
+> v1.3.0 (castr-indicator 5646147; sync-plugin-repo.sh says "in sync").
+> Marketplace #11503 is retargeted to 5646147 and answered (issuecomment
+> 6691329805). Answer any reply there within 7 days.
+> The installed package passed on the office TV in both modes:
+> - mirror (with audio) and extend;
+> - each mode asked for the code once;
+> - extend captured the 1920x1080 `castr` output;
+> - the panel kept 2560x1600@240;
+> - teardown left nothing behind.
+> FOLLOW-UPS:
+> 1. Option to mute the laptop's output while casting (user asked).
+> 2. Sync pairings between modes right after a cast saves one, not only at
+>    castrd start: extend asked for the code again although mirror had just
+>    paired.
+> 3. castr shows the helper's refusals with advice castr users can't follow
+>    (`-pair`, editing the creds file). Map them to castr actions.
+> 4. Offer the clock fix (4ab072a) upstream as its own small PR.
+>
 > **2026-11-06: security review before release, and the fixes.** At the
 > user's request, castr's unpushed changes and the helper branch went through
 > a security review, an independent check of each finding, fixes, a second
