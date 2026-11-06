@@ -572,6 +572,36 @@ func TestTheReceiversIdentityTravelsWithThePairing(t *testing.T) {
 	}
 }
 
+// castr-airplay also records when a pairing was made, what kind of code made
+// it, and the address it was made at. The address is what binds a receiver
+// added by address, which has no device ID castr could name; the time is how
+// two modes' pairings with the same receiver are told apart. All of it
+// describes the pairing, so it travels with the keys.
+const pairedTVWithHistory = `{"AA:BB:CC:DD:EE:FF":{"pairing_id":"id-1","ed25519_public":"pub-1",` +
+	`"ed25519_seed":"seed-1","pairing_protocol":"hap","receiver_id":"tv-id",` +
+	`"receiver_ed25519_public":"tv-key","paired_at":"2026-11-01T10:00:00Z",` +
+	`"pairing_code":"pin","receiver_address":"10.0.0.5","restore_token":"token-for-mirror"}}`
+
+func TestWhenWhereAndHowAReceiverWasPairedTravelWithThePairing(t *testing.T) {
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), pairedTVWithHistory)
+
+	if err := SyncPairing(dir, []string{"mirror", "extend"}); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := readCredsMap(t, CredsPath(dir, "extend"))["AA:BB:CC:DD:EE:FF"]
+	for field, want := range map[string]string{"paired_at": "2026-11-01T10:00:00Z",
+		"pairing_code": "pin", "receiver_address": "10.0.0.5"} {
+		if entry[field] != want {
+			t.Errorf("extend got %s %v, want %s", field, entry[field], want)
+		}
+	}
+	if _, leaked := entry["restore_token"]; leaked {
+		t.Error("mirror's portal token travelled with the pairing")
+	}
+}
+
 // Another receiver's identity beside these keys would make doubletake refuse
 // the real receiver as an impostor.
 func TestAPairingWithoutAReceiverIdentityClearsAStaleOne(t *testing.T) {

@@ -150,9 +150,14 @@ func BuildArgv(cfg Config, deviceID, address string, port int, credsPath string)
 // "airplay:<deviceid>". A receiver that advertised none is known by its
 // address instead, which says nothing about which device it is, so nothing
 // is passed.
+//
+// A receiver the user added by address is "airplay:manual:<address>". That is
+// castr's name for an address, not an ID any receiver advertised, and no
+// pairing is ever saved under it, so nothing is passed for it either: the
+// helper then binds the receiver to its address itself.
 func airPlayDeviceID(deviceID, address string) string {
 	id, ok := strings.CutPrefix(deviceID, "airplay:")
-	if !ok || id == "" || id == address {
+	if !ok || id == "" || id == address || strings.HasPrefix(id, "manual:") {
 		return ""
 	}
 	return id

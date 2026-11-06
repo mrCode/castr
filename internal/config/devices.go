@@ -145,7 +145,7 @@ var LegacyCredsFilenames = map[string]string{
 // restore_token above all -- describes a capture, not a receiver, and must
 // never be copied between modes or carried over from another application.
 var pairingFields = []string{"pairing_id", "ed25519_public", "ed25519_seed", "pairing_protocol",
-	"receiver_id", "receiver_ed25519_public"}
+	"receiver_id", "receiver_ed25519_public", "paired_at", "pairing_code", "receiver_address"}
 
 // identityFields must ALL be present for an entry to hold a usable pairing;
 // doubletake rejects one missing any of them.
@@ -165,6 +165,13 @@ var identityFields = pairingFields[:3]
 // checks every later connection against them, and pairs again -- the
 // television shows a code -- when they are missing. They belong to the same
 // pairing, so they travel with it and are removed with it the same way.
+//
+// paired_at, pairing_code and receiver_address say when the pairing was made,
+// with what kind of code ("pin" or "password"; empty for none), and at which
+// address. castr-airplay binds a receiver castr can name by no device ID --
+// one added by address -- to that address, so it is as much a part of the
+// pairing as the keys; and paired_at is how SyncPairing tells which of two
+// modes' pairings with a receiver is the newer.
 
 // MergePairing copies pairing keys from src into dst without touching either
 // file's portal tokens, and returns the receivers it added.

@@ -265,10 +265,27 @@ func TestTheReceiversOwnDeviceIDIsPassed(t *testing.T) {
 
 // A receiver that advertised no device ID is known to castr by its address,
 // and an address says nothing about which device answers there.
+//
+// A receiver the user added by address is the same case under another name:
+// castr calls it "airplay:manual:<address>", and no pairing is ever saved
+// under "manual:<address>". Passing that would leave the helper looking for a
+// receiver that does not exist, and hide the warning it gives when it cannot
+// tell which receiver is meant. Without a device ID it binds the receiver to
+// its address itself.
 func TestNoDeviceIDIsInventedFromAnAddressOrAnotherProtocol(t *testing.T) {
-	for _, id := range []string{"airplay:10.0.0.5", "airplay:", "", "chromecast:8a308a938ce275d9"} {
-		if got := argvString(BuildArgv(config(), id, "10.0.0.5", 7000, "")); strings.Contains(got, "-device-id") {
-			t.Errorf("id %q: argv %q passes a device ID", id, got)
+	for _, tc := range []struct{ id, address string }{
+		{"airplay:10.0.0.5", "10.0.0.5"},
+		{"airplay:", "10.0.0.5"},
+		{"", "10.0.0.5"},
+		{"chromecast:8a308a938ce275d9", "10.0.0.5"},
+		{"airplay:manual:10.0.0.5", "10.0.0.5"},
+		// The id keeps the address it was added with, even once the
+		// receiver has been reached somewhere else.
+		{"airplay:manual:10.0.0.5", "10.0.0.9"},
+		{"airplay:manual:", "10.0.0.5"},
+	} {
+		if got := argvString(BuildArgv(config(), tc.id, tc.address, 7000, "")); strings.Contains(got, "-device-id") {
+			t.Errorf("id %q at %s: argv %q passes a device ID", tc.id, tc.address, got)
 		}
 	}
 }
