@@ -2,9 +2,12 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/mrCode/castr/internal/sound"
 )
 
 // The router holds its lock across every pactl call, and status, stop and
@@ -52,5 +55,28 @@ func TestTheSoundGuardChecksItsArguments(t *testing.T) {
 				t.Errorf("runSoundGuard(%q) = %d, want %d", tc.args, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestTheSoundGuardLeavesAnotherDaemonsRoutingAlone(t *testing.T) {
+	// The routing belongs to a live daemon that is not the one this guard
+	// watches: the guard must exit at once, changing nothing.
+	dir := t.TempDir()
+	state := `{"previous_default": "speakers", "laptop_sink": "speakers", "daemon_pid": ` + strconv.Itoa(os.Getpid()) + "}\n"
+	if err := os.WriteFile(filepath.Join(dir, sound.StateFile), []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan int, 1)
+	go func() { done <- runSoundGuard([]string{"999999999", dir}) }()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("exit %d, want 0", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the guard of a dead daemon kept watching another daemon's routing")
+	}
+	if _, err := os.Stat(filepath.Join(dir, sound.StateFile)); err != nil {
+		t.Errorf("the other daemon's state file: %v", err)
 	}
 }

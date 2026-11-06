@@ -422,13 +422,13 @@ func (f *fakePulse) changingCallsSince(n int) [][]string {
 	return out
 }
 
-func readState(t *testing.T, dir string) map[string]string {
+func readState(t *testing.T, dir string) map[string]any {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(dir, StateFile))
 	if err != nil {
 		t.Fatalf("reading the state file: %v", err)
 	}
-	var s map[string]string
+	var s map[string]any
 	if err := json.Unmarshal(raw, &s); err != nil {
 		t.Fatalf("state file %q: %v", raw, err)
 	}
@@ -1171,4 +1171,132 @@ func TestTheRouterStartsTheGuardOnceOnFirstAttach(t *testing.T) {
 	if starts != 2 {
 		t.Fatalf("guard started %d times after a restore and a new attach, want 2", starts)
 	}
+}
+
+func TestTheStateFileNamesTheDaemonThatOwnsTheRouting(t *testing.T) {
+	// A dead daemon's guard must not tear down a new daemon's routing.
+	f := newFakePulse()
+	dir := t.TempDir()
+	r := NewRouter(f.run, dir)
+	mustAttach(t, r, "airplay:A")
+	if s := readState(t, dir); s["daemon_pid"] != float64(os.Getpid()) {
+		t.Errorf("daemon_pid %v, want %d", s["daemon_pid"], os.Getpid())
+	}
+}
+
+func TestAFailedRestoreKeepsTheStateFileUntilARetrySucceeds(t *testing.T) {
+	// Deleting the state file after a restore that failed leaves the laptop
+	// on castr_mix -- silent, with every cast on TV -- and nothing that
+	// knows to retry.
+	f := newFakePulse()
+	dir := t.TempDir()
+	r := NewRouter(f.run, dir)
+	mustAttach(t, r, "airplay:A")
+	f.failCmd = "list short modules"
+
+	if err := r.Detach("airplay:A"); err == nil {
+		t.Fatal("Detach hid the failure")
+	}
+	if s := readState(t, dir); s["previous_default"] != realSink {
+		t.Fatalf("state %v; want it kept, naming %s", s, realSink)
+	}
+
+	if err := r.RetryRestore(); err == nil {
+		t.Fatal("RetryRestore hid the failure")
+	}
+	readState(t, dir)
+
+	f.failCmd = ""
+	if err := r.RetryRestore(); err != nil {
+		t.Fatal(err)
+	}
+	if f.def != realSink {
+		t.Errorf("default is %s, want %s", f.def, realSink)
+	}
+	f.allAppsOn(t, realSink)
+	if m := f.castrModules(); len(m) != 0 {
+		t.Errorf("castr modules left: %v", m)
+	}
+	stateGone(t, dir)
+
+	n := len(f.calls)
+	if err := r.RetryRestore(); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != n {
+		t.Errorf("with nothing pending RetryRestore ran %v", f.calls[n:])
+	}
+}
+
+func TestRetryRestoreLeavesALiveRoutingAlone(t *testing.T) {
+	f := newFakePulse()
+	dir := t.TempDir()
+	r := NewRouter(f.run, dir)
+	mustAttach(t, r, "airplay:A")
+	n := len(f.calls)
+	if err := r.RetryRestore(); err != nil {
+		t.Fatal(err)
+	}
+	if c := f.changingCallsSince(n); len(c) != 0 {
+		t.Errorf("RetryRestore changed a live routing: %v", c)
+	}
+	if c, ok := r.Choice("airplay:A"); !ok || c != TV {
+		t.Errorf("Choice = %q, %v; want tv", c, ok)
+	}
+}
+
+func TestANewCastFinishesAPendingRestoreFirst(t *testing.T) {
+	// The default the failed restore left is castr_mix: taking it as the
+	// one to go back to would lose the real one.
+	f := newFakePulse()
+	dir := t.TempDir()
+	r := NewRouter(f.run, dir)
+	mustAttach(t, r, "airplay:A")
+	f.failCmd = "list short modules"
+	_ = r.Detach("airplay:A")
+	f.failCmd = ""
+
+	mustAttach(t, r, "airplay:B")
+	if s := readState(t, dir); s["previous_default"] != realSink {
+		t.Errorf("state %v, want previous_default %s", s, realSink)
+	}
+	if err := r.Detach("airplay:B"); err != nil {
+		t.Fatal(err)
+	}
+	if f.def != realSink {
+		t.Errorf("default is %s, want %s", f.def, realSink)
+	}
+	if m := f.castrModules(); len(m) != 0 {
+		t.Errorf("castr modules left: %v", m)
+	}
+	stateGone(t, dir)
+}
+
+func TestAFailedRecoverKeepsTheStateFile(t *testing.T) {
+	f := newFakePulse()
+	dir := t.TempDir()
+	mustAttach(t, NewRouter(f.run, dir), "airplay:A")
+	f.failCmd = "list short modules"
+	if err := Recover(f.run, dir); err == nil {
+		t.Fatal("Recover hid the failure")
+	}
+	readState(t, dir)
+	f.failCmd = ""
+	if err := Recover(f.run, dir); err != nil {
+		t.Fatal(err)
+	}
+	stateGone(t, dir)
+}
+
+func TestACorruptStateFileIsReported(t *testing.T) {
+	f := newFakePulse()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, StateFile), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := Recover(f.run, dir)
+	if err == nil || !strings.Contains(err.Error(), StateFile) {
+		t.Fatalf("Recover = %v, want the parse error", err)
+	}
+	stateGone(t, dir) // nothing in it to retry with; the restore itself worked
 }

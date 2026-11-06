@@ -3,6 +3,7 @@ package sound
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 )
@@ -20,6 +21,7 @@ type Router struct {
 	mu       sync.Mutex
 	run      Runner
 	stateDir string
+	pid      int // written into the state file, for the guard
 
 	// StartGuard, when set, starts the process that restores the sound if
 	// the daemon dies. It runs once each time the state file is first
@@ -36,7 +38,7 @@ type Router struct {
 }
 
 func NewRouter(run Runner, stateDir string) *Router {
-	return &Router{run: run, stateDir: stateDir, casts: map[string]*cast{}}
+	return &Router{run: run, stateDir: stateDir, pid: os.Getpid(), casts: map[string]*cast{}}
 }
 
 // Attach routes a new cast and returns the source its receiver captures. The
@@ -50,6 +52,11 @@ func (r *Router) Attach(castID string) (string, error) {
 	}
 	first := len(r.casts) == 0
 	if first {
+		// A restore that failed left its state file. Finish it first: the
+		// default it left may be castr_mix, which is no default to go back to.
+		if err := r.retryRestore(); err != nil {
+			return "", fmt.Errorf("the sound from an earlier cast is not restored yet: %w", err)
+		}
 		if err := r.takeOver(); err != nil {
 			return "", errors.Join(err, r.restoreLocked())
 		}
@@ -94,10 +101,12 @@ func (r *Router) takeOver() error {
 		// default. Recover runs at startup, so this means it failed.
 		return fmt.Errorf("the default output is castr's own %s, left from an earlier cast", def)
 	}
-	if err := saveState(r.stateDir, savedState{PreviousDefault: def, LaptopSink: def}); err != nil {
+	r.previous = def
+	if err := r.save(def); err != nil {
+		r.previous = ""
 		return err
 	}
-	r.previous, r.laptop = def, def
+	r.laptop = def
 	if r.StartGuard != nil {
 		if err := r.StartGuard(); err != nil {
 			return err
@@ -355,7 +364,7 @@ func laptopFallback(sinks []sink, previous string) string {
 // is still listed as castr loaded it: when its output vanished it unloaded
 // itself, and the new loopback has most likely just been given its id.
 func (r *Router) adoptLaptop(name string) error {
-	if err := saveState(r.stateDir, savedState{PreviousDefault: r.previous, LaptopSink: name}); err != nil {
+	if err := r.save(name); err != nil {
 		return err
 	}
 	r.laptop = name
@@ -370,6 +379,31 @@ func (r *Router) adoptLaptop(name string) error {
 		return errors.Join(err, listErr)
 	}
 	return errors.Join(err, unloadRef(r.run, old, mods))
+}
+
+// save writes the state file for the routing as it is, with laptop as the
+// laptop's output.
+func (r *Router) save(laptop string) error {
+	return saveState(r.stateDir, savedState{PreviousDefault: r.previous, LaptopSink: laptop, DaemonPID: r.pid})
+}
+
+// RetryRestore finishes a restore that failed, while no cast is routed: the
+// state file it kept says what to go back to. With nothing pending it does
+// nothing. The daemon calls it every second.
+func (r *Router) RetryRestore() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.casts) > 0 {
+		return nil
+	}
+	return r.retryRestore()
+}
+
+func (r *Router) retryRestore() error {
+	if _, pending, _ := loadState(r.stateDir); !pending {
+		return nil
+	}
+	return Recover(r.run, r.stateDir)
 }
 
 // Restore undoes all routing and puts the laptop back as it was before the
@@ -399,7 +433,8 @@ func (r *Router) restoreLocked() error {
 //     with neither left, the session manager's own choice stands;
 //  3. move the app streams on castr_mix to the new default;
 //  4. unload castr's outputs;
-//  5. delete the state file.
+//  5. delete the state file -- only if every step worked, so that a failed
+//     restore is retried: by the daemon, by the guard, or by the next castrd.
 func restore(run Runner, stateDir, laptop, previous string) error {
 	var errs []error
 	mods, err := listModules(run)
@@ -448,6 +483,8 @@ func restore(run Runner, stateDir, laptop, previous string) error {
 	for _, id := range sinks {
 		errs = append(errs, unloadModule(run, id))
 	}
-	errs = append(errs, clearState(stateDir))
-	return errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	return clearState(stateDir)
 }

@@ -17,6 +17,9 @@ const StateFile = "sound.json"
 type savedState struct {
 	PreviousDefault string `json:"previous_default"`
 	LaptopSink      string `json:"laptop_sink"`
+	// DaemonPID is the castrd that owns the routing: a dead daemon's guard
+	// leaves a new daemon's routing alone.
+	DaemonPID int `json:"daemon_pid,omitempty"`
 }
 
 func statePath(dir string) string { return filepath.Join(dir, StateFile) }
@@ -69,7 +72,7 @@ func loadState(dir string) (savedState, bool, error) {
 	}
 	var s savedState
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return savedState{}, true, nil
+		return savedState{}, true, fmt.Errorf("parsing %s: %w", statePath(dir), err)
 	}
 	return s, true, nil
 }
@@ -83,7 +86,8 @@ func clearState(dir string) error {
 
 // Recover restores routing left by a daemon that died. It finds leftovers by
 // the state file or by castr modules, so it works with either missing; with
-// neither, it changes nothing.
+// neither, it changes nothing. If any step fails, the state file stays for
+// the next try.
 func Recover(run Runner, stateDir string) error {
 	saved, pending, loadErr := loadState(stateDir)
 	if !pending {

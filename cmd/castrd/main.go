@@ -172,12 +172,13 @@ func run(idleTimeout time.Duration, verbose bool) error {
 	// Reached on SIGTERM, on `castr quit`, and on the idle timeout. Without
 	// this, logout and reboot leave doubletake and its capture pipelines alive
 	// with nothing owning them.
-	shutdown(d, backend, registry, stateDir)
+	shutdown(d, backend, registry, stateDir, hyprctl)
 	return serveErr
 }
 
-// shutdown tears down live casts and saves what should outlive us.
-func shutdown(d *daemon.Daemon, backend *airplay.Backend, registry *daemon.Registry, stateDir string) {
+// shutdown tears down live casts and saves what should outlive us. hyprctl
+// is a parameter so a test can run it without touching the compositor.
+func shutdown(d *daemon.Daemon, backend *airplay.Backend, registry *daemon.Registry, stateDir string, hyprctl hypr.Runner) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -188,10 +189,8 @@ func shutdown(d *daemon.Daemon, backend *airplay.Backend, registry *daemon.Regis
 	}
 	// After the casts, and for all of them: the loop above stops only the
 	// AirPlay ones, and a Chromecast's routing must not outlive the daemon.
-	if d.SoundOn && d.Sound != nil {
-		if err := d.Sound.Restore(); err != nil {
-			log.Printf("restoring the sound: %v", err)
-		}
+	if err := d.RestoreSound(); err != nil {
+		log.Printf("restoring the sound: %v", err)
 	}
 	// A last sweep, because a session that failed to stop cleanly still leaves
 	// an output behind, and the next daemon cannot tell it apart from a live one.
@@ -381,7 +380,7 @@ func credsPath(stateDir, mode string) (string, error) {
 }
 
 // runSoundGuard runs `castrd --sound-guard <pid> <stateDir>` and returns the
-// exit code: 2 for bad arguments.
+// exit code: 2 for bad arguments, 1 if the sound could not be restored.
 func runSoundGuard(args []string) int {
 	usage := func() int {
 		fmt.Fprintln(os.Stderr, "usage: castrd --sound-guard <pid> <state-dir>")
@@ -395,12 +394,21 @@ func runSoundGuard(args []string) int {
 		return usage()
 	}
 	stateDir := args[1]
-	sound.Guard(context.Background(), pid, stateDir,
-		func(pid int) bool { return syscall.Kill(pid, 0) == nil },
+	// Its stderr is the daemon's: a reader that has gone must not kill it.
+	signal.Ignore(syscall.SIGPIPE)
+	err = sound.Guard(context.Background(), pid, stateDir, sound.ProcessAlive,
 		func() error { return sound.Recover(execRunner, stateDir) },
-		500*time.Millisecond)
+		guardTiming)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "castrd %s: restoring the sound: %v\n", sound.GuardFlag, err)
+		return 1
+	}
 	return 0
 }
+
+// guardTiming: the laptop comes back within half a second of the daemon
+// dying, and a recovery that fails is retried every second for a minute.
+var guardTiming = sound.GuardTiming{Poll: 500 * time.Millisecond, Retry: time.Second, RetryFor: time.Minute}
 
 // soundTimeout bounds each pactl and pw-metadata call. The router holds its
 // lock across them, and status, stop and shutdown wait on that lock: a hung

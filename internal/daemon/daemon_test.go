@@ -483,7 +483,7 @@ type fakeSound struct {
 	followErr error
 	lose      bool // the next failing Follow forgets every cast, as a lost routing does
 	choices   map[string]sound.Choice
-	calls     []string // "attach:a", "detach:a", "set:a:laptop", "follow", "restore"
+	calls     []string // "attach:a", "detach:a", "set:a:laptop", "follow", "restore", "retry"
 }
 
 func newFakeSound() *fakeSound { return &fakeSound{choices: map[string]sound.Choice{}} }
@@ -544,6 +544,13 @@ func (f *fakeSound) Restore() error {
 	defer f.mu.Unlock()
 	f.record("restore")
 	f.choices = map[string]sound.Choice{}
+	return nil
+}
+
+func (f *fakeSound) RetryRestore() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("retry")
 	return nil
 }
 
@@ -881,6 +888,88 @@ func TestFollowIsNotCalledWithNothingAttached(t *testing.T) {
 
 	if n := snd.count("follow"); n != 0 {
 		t.Errorf("follow called %d times with nothing casting", n)
+	}
+}
+
+// watchSound runs WatchSound until the test ends, and waits for it to stop.
+func (r *rig) watchSound(t *testing.T) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { r.daemon.WatchSound(time.Millisecond); close(done) }()
+	t.Cleanup(func() {
+		r.daemon.Shutdown()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("WatchSound did not stop when the daemon did")
+		}
+	})
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestWatchSoundRetriesAPendingRestoreWhileNothingIsRouted(t *testing.T) {
+	// A restore that failed at the last detach must not wait for the idle
+	// exit, up to 15 minutes, with the laptop silent.
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	r.watchSound(t)
+
+	waitFor(t, "two retries", func() bool { return snd.count("retry") >= 2 })
+	if n := snd.count("follow"); n != 0 {
+		t.Errorf("follow called %d times with nothing routed", n)
+	}
+}
+
+func TestWatchSoundFollowsWhileACastIsRouted(t *testing.T) {
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	if err := r.daemon.Start(context.Background(), "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	r.watchSound(t)
+
+	waitFor(t, "two follows", func() bool { return snd.count("follow") >= 2 })
+	if n := snd.count("retry"); n != 0 {
+		t.Errorf("a pending restore was retried %d times under a live cast", n)
+	}
+}
+
+func TestWatchSoundDoesNothingWithSoundOff(t *testing.T) {
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	r.daemon.SoundOn = false
+	r.watchSound(t)
+	time.Sleep(20 * time.Millisecond)
+	if n := snd.callCount(); n != 0 {
+		t.Errorf("sound was called %d times with sound off: %v", n, snd.calls)
+	}
+}
+
+func TestRestoreSoundRestoresOnlyWithSoundOn(t *testing.T) {
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	if err := r.daemon.RestoreSound(); err != nil {
+		t.Fatal(err)
+	}
+	if n := snd.count("restore"); n != 1 {
+		t.Errorf("restore called %d times, want 1", n)
+	}
+	r.daemon.SoundOn = false
+	if err := r.daemon.RestoreSound(); err != nil {
+		t.Fatal(err)
+	}
+	if n := snd.count("restore"); n != 1 {
+		t.Errorf("restore called %d times with sound off, want still 1", n)
 	}
 }
 

@@ -417,6 +417,8 @@ type Sound interface {
 	Detach(id string) error
 	Follow() error
 	Restore() error
+	// RetryRestore finishes a restore that failed, once nothing is routed.
+	RetryRestore() error
 }
 
 // The Sound calls below run pactl, so none is made holding d.mu: status
@@ -500,8 +502,9 @@ func (d *Daemon) soundOf(id string) (choice, note string) {
 	return "", note
 }
 
-// FollowSound keeps the routing right while the user changes outputs. It
-// does nothing while no cast's sound is routed.
+// FollowSound keeps the routing right while the user changes outputs. While
+// no cast's sound is routed, it retries a restore that failed instead: the
+// laptop may be silent until one succeeds.
 //
 // Only a lost routing changes what the casts report: the router has then
 // restored the laptop and forgotten every cast, which Choice shows, so each
@@ -518,6 +521,7 @@ func (d *Daemon) FollowSound() {
 	}
 	d.mu.Unlock()
 	if len(ids) == 0 {
+		_ = d.Sound.RetryRestore() // the next tick retries again
 		return
 	}
 
@@ -540,6 +544,15 @@ func (d *Daemon) FollowSound() {
 			d.soundNotes[id] = "sound is back on the laptop: " + firstLine(err)
 		}
 	}
+}
+
+// RestoreSound undoes every cast's sound routing. Shutdown calls it after
+// stopping the casts: a Chromecast's routing must not outlive the daemon.
+func (d *Daemon) RestoreSound() error {
+	if !d.routesSound() {
+		return nil
+	}
+	return d.Sound.Restore()
 }
 
 // WatchSound calls FollowSound every tick until the daemon stops.
