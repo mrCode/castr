@@ -402,8 +402,21 @@ func runSoundGuard(args []string) int {
 	return 0
 }
 
-// execRunner runs a command and returns its standard output.
+// soundTimeout bounds each pactl and pw-metadata call. The router holds its
+// lock across them, and status, stop and shutdown wait on that lock: a hung
+// call must not freeze castrd.
+var soundTimeout = 5 * time.Second
+
+// execRunner runs a sound command and returns its standard output, killing
+// it if it outlasts soundTimeout.
 func execRunner(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), soundTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = time.Second // in case a child it left holds the output pipe
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return string(out), fmt.Errorf("%s timed out after %v", name, soundTimeout)
+	}
 	return string(out), err
 }
