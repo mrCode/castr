@@ -335,6 +335,11 @@ func TestEveryProcessTheAlwaysOnTimerStartsIsSafeOrGated(t *testing.T) {
 		}
 	}
 
+	// Switching a cast's sound is the user's act, never the timer's.
+	if strings.Contains(body, "soundProc") || strings.Contains(body, "setSound") {
+		t.Error("the always-on timer touches the sound switch; it must only run on a click")
+	}
+
 	// The gate is only worth something if busy really means "a daemon holds a
 	// cast". Widened to cover idle, it would let the poll run with no daemon.
 	busy := regexp.MustCompile(`property bool busy:\s*([^\n]+)`).FindStringSubmatch(qml)
@@ -525,5 +530,47 @@ func TestATypedCodeIsNotKeptOnceNothingWaitsForIt(t *testing.T) {
 	notWaiting = notWaiting[:strings.Index(notWaiting, "return")]
 	if !strings.Contains(notWaiting, `root.pinCode = ""`) {
 		t.Error("a typed code outlives the request it was typed for")
+	}
+}
+
+func TestTheSoundSwitchRunsOnlyCastrSoundWithFixedArguments(t *testing.T) {
+	qml := stripComments(repoFile(t, "share/quickshell/castr-indicator/Widget.qml"))
+
+	assign := regexp.MustCompile(`soundProc\.command\s*=\s*([^\n]+)`).FindAllStringSubmatch(qml, -1)
+	if len(assign) != 1 {
+		t.Fatalf("want exactly one place that sets soundProc's command, got %d", len(assign))
+	}
+	if got := strings.Join(strings.Fields(assign[0][1]), " "); got != `["castr", "sound", deviceId, value]` {
+		t.Errorf("soundProc runs %s; want only castr sound <id> <choice>", got)
+	}
+	if n := len(regexp.MustCompile(`soundProc\.running\s*=\s*true`).FindAllString(qml, -1)); n != 1 {
+		t.Errorf("soundProc is started %d times; want once, from setSound", n)
+	}
+
+	// setSound refuses anything but the three choices before building a command.
+	i := strings.Index(qml, "function setSound(")
+	if i < 0 {
+		t.Fatal("no setSound function")
+	}
+	open := strings.Index(qml[i:], "{") + i
+	body := braceBlock(qml, open)
+	guard := regexp.MustCompile(`value\s*!==\s*"tv"\s*&&\s*value\s*!==\s*"laptop"\s*&&\s*value\s*!==\s*"both"`).FindStringIndex(body)
+	if guard == nil {
+		t.Fatal("setSound does not reject everything but tv, laptop and both")
+	}
+	if !strings.Contains(body[guard[1]:strings.Index(body, "soundProc.command")], "return") {
+		t.Error("setSound's guard does not return before the command is built")
+	}
+
+	// The group calls it with the cast's id, and a finished switch refreshes.
+	if !regexp.MustCompile(`root\.setSound\(modelData\.device_id,\s*value\)`).MatchString(qml) {
+		t.Error("the SOUND group does not call root.setSound(modelData.device_id, value)")
+	}
+	pi := strings.Index(qml, "id: soundProc\n")
+	if pi < 0 {
+		t.Fatal("no soundProc")
+	}
+	if !strings.Contains(braceBlock(qml, strings.LastIndex(qml[:pi], "{")), "root.refreshPanel()") {
+		t.Error("soundProc does not refresh the panel when it exits")
 	}
 }
