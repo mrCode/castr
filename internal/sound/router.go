@@ -489,10 +489,17 @@ func (r *Router) retryRestore() error {
 }
 
 // Restore undoes all routing and puts the laptop back as it was before the
-// first cast.
+// first cast. With no cast routed it finishes a restore that failed, from
+// its state file: the router forgot what to put back when that restore
+// ended, and restoring from memory would delete the file with the
+// configured default never written back. It also sweeps any castr modules
+// left with no state file.
 func (r *Router) Restore() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if len(r.casts) == 0 {
+		return Recover(r.run, r.stateDir)
+	}
 	return r.restoreLocked()
 }
 

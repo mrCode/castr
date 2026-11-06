@@ -382,3 +382,49 @@ func TestRestoreMovesTheAppsToWhereWirePlumberWillPlay(t *testing.T) {
 		t.Errorf("default is %s, want %s", f.def, buds)
 	}
 }
+
+func TestShutdownFinishesARestoreThatFailed(t *testing.T) {
+	// castrd's shutdown calls Restore. After a failed last detach the
+	// router has forgotten what to put back; the state file has not.
+	for _, known := range []bool{true, false} {
+		t.Run(map[bool]string{true: "with the history", false: "without it"}[known], func(t *testing.T) {
+			f := newFakePulse()
+			f.history = slices.Clone(before)
+			dir := t.TempDir()
+			r := NewRouter(f.run, dir)
+			if known {
+				r.HistoryFile = f.withStateFile(t)
+			}
+			mustAttach(t, r, "airplay:A")
+			f.metaFail = true
+			if err := r.Detach("airplay:A"); err == nil {
+				t.Fatal("Detach hid the failure")
+			}
+			readState(t, dir)
+
+			f.metaFail = false
+			if err := r.Restore(); err != nil {
+				t.Fatal(err)
+			}
+			if known {
+				historyIs(t, f, before)
+			}
+			configuredIs(t, f, jbl)
+			if f.def != realSink {
+				t.Errorf("default is %s, want %s", f.def, realSink)
+			}
+			stateGone(t, dir)
+		})
+	}
+}
+
+func TestShutdownWithNothingRoutedChangesNothing(t *testing.T) {
+	f := newFakePulse()
+	r := NewRouter(f.run, t.TempDir())
+	if err := r.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if c := f.changingCallsSince(0); len(c) != 0 {
+		t.Errorf("Restore changed things: %v", c)
+	}
+}
