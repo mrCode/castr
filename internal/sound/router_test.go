@@ -63,6 +63,12 @@ type fakePulse struct {
 	history    []string
 	noMetadata bool
 	metaFail   bool
+	// lagDefault makes get-default-sink answer with the default from before
+	// the last write of the key, as when WirePlumber has not handled it yet.
+	lagDefault bool
+	lagged     string
+	// failWrite makes the n-th write of the key with pw-metadata fail.
+	failWrite, writes int
 	// stateFile, when set, is WirePlumber's default-nodes state file, kept
 	// in step with history.
 	stateFile string
@@ -207,6 +213,7 @@ func (f *fakePulse) configured() *string {
 // writeConfigured is what WirePlumber does when the key is written: the
 // output moves to the top of the stack, and the default is chosen again.
 func (f *fakePulse) writeConfigured(name string) {
+	f.lagged = f.def
 	f.setConfigured(name)
 	f.reselect()
 }
@@ -298,6 +305,9 @@ func (f *fakePulse) metadata(args []string) (string, error) {
 		if err := json.Unmarshal([]byte(args[4]), &v); err != nil || v.Name == "" {
 			return "", fmt.Errorf("bad value %q", args[4])
 		}
+		if f.writes++; f.writes == f.failWrite {
+			return "", errors.New("pw-metadata: signal: killed")
+		}
 		f.writeConfigured(v.Name)
 		return found, nil
 	}
@@ -323,6 +333,9 @@ func (f *fakePulse) run(name string, args ...string) (string, error) {
 		}
 		if f.defaultOut != nil {
 			return *f.defaultOut, nil
+		}
+		if f.lagDefault && f.lagged != "" {
+			return f.lagged + "\n", nil
 		}
 		return f.def + "\n", nil
 	case cmd == "list short sinks":
@@ -1689,15 +1702,29 @@ func TestFollowLetsTheConfiguredDefaultComeBack(t *testing.T) {
 
 func TestACastrConfiguredDefaultLeftBehindIsNotPutBack(t *testing.T) {
 	// An older castr left castr_mix as WirePlumber's configured default:
-	// that was never the user's choice.
+	// that was never the user's choice. Without the history file castr
+	// cannot see what lies behind it, and deleting the key would erase it
+	// all: the key is left alone.
 	f := newFakePulse()
+	f.setConfigured("bluez_hp")
 	f.setConfigured("castr_mix")
 	r := NewRouter(f.run, t.TempDir())
 	mustAttach(t, r, "airplay:A")
+	n := len(f.calls)
 	if err := r.Detach("airplay:A"); err != nil {
 		t.Fatal(err)
 	}
-	configuredIs(t, f, "")
+	for _, c := range f.calls[n:] {
+		if c[0] == "pw-metadata" && isChanging(c) {
+			t.Errorf("restore ran %v, want the key left alone", c)
+		}
+	}
+	if !slices.Contains(f.history, "bluez_hp") || !slices.Contains(f.history, realSink) {
+		t.Errorf("output history %v lost what was behind castr_mix", f.history)
+	}
+	if f.def != realSink {
+		t.Errorf("default is %s, want %s", f.def, realSink)
+	}
 }
 
 func TestNothingEverChangesARealOutputsVolume(t *testing.T) {

@@ -319,8 +319,9 @@ const configuredKey = "default.configured.audio.sink"
 
 // configuredDefault is a saved default.configured.audio.sink.
 type configuredDefault struct {
-	// Saved is false in a state file from before castr saved it; restore
-	// then leaves the key alone.
+	// Saved is false in a state file from before castr saved it, or when
+	// the key held a castr leftover and the stack behind it is unknown;
+	// restore then leaves the key alone.
 	Saved bool `json:"saved"`
 	// Name is "" when the key was absent: restore deletes it.
 	Name string `json:"name,omitempty"`

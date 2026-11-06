@@ -428,3 +428,86 @@ func TestShutdownWithNothingRoutedChangesNothing(t *testing.T) {
 		t.Errorf("Restore changed things: %v", c)
 	}
 }
+
+func TestTheAppsGoWhereWirePlumberPicksNotWhereItSaysMidWrite(t *testing.T) {
+	// The headphones and the speakers are both there. The rebuild's first
+	// write makes the speakers the default for a moment, and WirePlumber
+	// handles the writes after pw-metadata returns: get-default-sink can
+	// still say speakers when the last write has put the headphones on top.
+	// Or it names an output the user picked a moment ago, which the rebuild
+	// puts back under the headphones.
+	speakers := realSink + "\n"
+	for name, stale := range map[string]func(f *fakePulse){
+		"one write behind":      func(f *fakePulse) { f.lagDefault = true },
+		"naming another output": func(f *fakePulse) { f.defaultOut = &speakers },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakePulse()
+			f.addSink(jbl, 0)
+			f.def = jbl
+			f.addApp(jbl)
+			f.addApp(jbl)
+			f.history = slices.Clone(before)
+			r := NewRouter(f.run, t.TempDir())
+			r.HistoryFile = f.withStateFile(t)
+			mustAttach(t, r, "airplay:A")
+			stale(f)
+			n := len(f.calls)
+			if err := r.Detach("airplay:A"); err != nil {
+				t.Fatal(err)
+			}
+			moved, wrote := 0, false
+			for _, c := range f.calls[n:] {
+				wrote = wrote || c[0] == "pw-metadata" && isChanging(c)
+				if len(c) == 4 && c[1] == "move-sink-input" {
+					moved++
+					if wrote {
+						t.Errorf("restore ran %v after a write: the apps would follow the default around first", c)
+					}
+					if c[3] != jbl {
+						t.Errorf("restore ran %v, want the apps moved to %s", c, jbl)
+					}
+				}
+			}
+			if moved != 2 {
+				t.Errorf("moved %d app streams, want 2", moved)
+			}
+			historyIs(t, f, before)
+			if f.def != jbl {
+				t.Errorf("default is %s, want %s", f.def, jbl)
+			}
+		})
+	}
+}
+
+func TestARebuildThatFailsHalfwayIsRetriedInFull(t *testing.T) {
+	f := newFakePulse()
+	f.history = slices.Clone(before)
+	dir := t.TempDir()
+	r := NewRouter(f.run, dir)
+	r.HistoryFile = f.withStateFile(t)
+	mustAttach(t, r, "airplay:A")
+	f.writes, f.failWrite = 0, 3 // pci and hyperX written, buds fails
+	if err := r.Detach("airplay:A"); err == nil {
+		t.Fatal("Detach hid the failure")
+	}
+	if got, _ := savedHistory(t, dir).([]any); len(got) != len(before) {
+		t.Fatalf("sink_history %v, want %v kept", savedHistory(t, dir), before)
+	}
+	if slices.Equal(f.history[:len(before)], before) {
+		t.Fatal("the failed write changed nothing; the test proves nothing")
+	}
+
+	if err := r.RetryRestore(); err != nil {
+		t.Fatal(err)
+	}
+	historyIs(t, f, before)
+	if f.def != realSink {
+		t.Errorf("default is %s, want %s", f.def, realSink)
+	}
+	f.allAppsOn(t, realSink)
+	if m := f.castrModules(); len(m) != 0 {
+		t.Errorf("castr modules left: %v", m)
+	}
+	stateGone(t, dir)
+}

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -126,7 +125,10 @@ func (r *Router) takeOver() error {
 			configured.Name = history[0]
 		}
 	case isCastrName(configured.Name):
-		configured.Name = "" // left by an earlier castr: it is no choice of the user's
+		// Left by an earlier castr: no choice of the user's to put back. But
+		// with the stack unknown, castr cannot see what lies behind it, and
+		// deleting the key would erase it all: the key is left alone.
+		configured = configuredDefault{}
 	}
 	sinks, err := listSinks(r.run)
 	if err != nil {
@@ -518,13 +520,13 @@ func (r *Router) restoreLocked() error {
 // if pactl cannot list them, none is unloaded, and the next Recover sweeps
 // them. Every step runs even if an earlier one fails:
 //  1. unload the loopbacks, so nothing feeds castr's outputs;
-//  2. with WirePlumber's stack of chosen outputs known, rebuild it exactly
-//     (writeSinkHistory): WirePlumber then picks the default from it, as it
-//     would have without castr. Without it, set the default to the laptop,
-//     the output the user was last using, or to previous if that is gone --
-//     only ever to an output that still exists; with neither left, the
-//     session manager's own choice stands;
-//  3. move the app streams on castr_mix to the new default;
+//  2. with WirePlumber's stack of chosen outputs known, move the app streams
+//     on castr_mix to the output WirePlumber will pick from it, then rebuild
+//     it exactly (writeSinkHistory), as it would be without castr;
+//  3. without it, set the default to the laptop, the output the user was
+//     last using, or to previous if that is gone -- only ever to an output
+//     that still exists; with neither left, the session manager's own
+//     choice stands -- and move the app streams on castr_mix there;
 //  4. unload castr's outputs;
 //  5. without the stack, put WirePlumber's configured default back exactly,
 //     which step 2 overwrote: the same output, or no key at all;
@@ -556,21 +558,42 @@ func restore(run Runner, stateDir string, s savedState) error {
 		_, ok := sinkID(present, name)
 		return ok && name != "" && !isCastrName(name)
 	}
-	stack := s.Configured.Saved && s.SinkHistory != nil
-	target := ""
-	if stack {
-		errs = append(errs, writeSinkHistory(run, s.SinkHistory))
-		// WirePlumber's choice, once it has made it; until then, the one it
-		// makes: the first output in the stack that exists.
-		if def, err := defaultSink(run); err == nil && usable(def) {
-			target = def
+	// With no real default to move to, unloading castr_mix below hands its
+	// streams to the session manager's fallback.
+	moveApps := func(target string) {
+		if _, ok := sinkID(present, mixSink); ok && target != "" {
+			errs = append(errs, moveAppsOnto(run, target, mixSink))
 		}
-		for _, want := range append(slices.Clone(s.SinkHistory), s.LaptopSink, s.PreviousDefault) {
+	}
+	stack := s.Configured.Saved && s.SinkHistory != nil
+	if stack {
+		// WirePlumber will pick the first output in the stack that exists:
+		// its place in the stack outranks any priority. castr works that
+		// out rather than ask: WirePlumber handles each write after
+		// pw-metadata returns, so get-default-sink may still name an output
+		// an earlier write made the default for a moment. The apps move
+		// first, so they do not follow those moments around either.
+		target := ""
+		for _, want := range s.SinkHistory {
+			if usable(want) {
+				target = want
+				break
+			}
+		}
+		if target == "" {
+			if def, err := defaultSink(run); err == nil && usable(def) {
+				target = def
+			}
+		}
+		for _, want := range []string{s.LaptopSink, s.PreviousDefault} {
 			if target == "" && usable(want) {
 				target = want
 			}
 		}
+		moveApps(target)
+		errs = append(errs, writeSinkHistory(run, s.SinkHistory))
 	} else {
+		target := ""
 		for _, want := range []string{s.LaptopSink, s.PreviousDefault} {
 			if !usable(want) {
 				continue
@@ -587,11 +610,7 @@ func restore(run Runner, stateDir string, s savedState) error {
 				target = def
 			}
 		}
-	}
-	// With no real default to move to, unloading castr_mix below hands its
-	// streams to the session manager's fallback.
-	if _, ok := sinkID(present, mixSink); ok && target != "" {
-		errs = append(errs, moveAppsOnto(run, target, mixSink))
+		moveApps(target)
 	}
 
 	for _, id := range sinks {
