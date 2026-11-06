@@ -1666,3 +1666,55 @@ func TestNothingEverChangesARealOutputsVolume(t *testing.T) {
 		}
 	}
 }
+
+func TestLoopbacksHaveStableNames(t *testing.T) {
+	// WirePlumber remembers each stream's volume under its media.name. A
+	// loopback's default one, loopback-<pid>-<n>, is new on every load, so
+	// every switch to Laptop or Both would add entries without bound.
+	f := newFakePulse()
+	r := NewRouter(f.run, t.TempDir())
+	mustAttach(t, r, "airplay:A")
+	mustAttach(t, r, "airplay:B")
+	for _, c := range []Choice{Laptop, Both, TV, Laptop, Both} {
+		mustSet(t, r, "airplay:A", c)
+		mustSet(t, r, "airplay:B", c)
+	}
+
+	names := map[string]bool{}
+	loads := 0
+	for _, c := range f.calls {
+		if len(c) < 3 || c[1] != "load-module" || c[2] != "module-loopback" {
+			continue
+		}
+		loads++
+		args := strings.Join(c[3:], " ")
+		for _, side := range []string{"sink_input_properties", "source_output_properties"} {
+			props, ok := quotedArg(args, side)
+			if !ok {
+				t.Errorf("loopback %q has no %s", args, side)
+				continue
+			}
+			names[moduleArg(props, "media.name")] = true
+			if !strings.HasPrefix(moduleArg(props, "node.name"), "castr_loop_") {
+				t.Errorf("loopback %q: %s has no castr node.name", args, side)
+			}
+		}
+	}
+	if loads < 4 {
+		t.Fatalf("only %d loopback loads", loads)
+	}
+	if len(names) != 2 || !names["castr_loop_laptop"] || !names["castr_loop_cast"] {
+		t.Errorf("loopback media.names %v, want only castr_loop_laptop and castr_loop_cast", names)
+	}
+	f.checkLoopbacksNeverMove(t)
+}
+
+// quotedArg returns the value of key="..." in module args.
+func quotedArg(args, key string) (string, bool) {
+	_, rest, ok := strings.Cut(args, key+`="`)
+	if !ok {
+		return "", false
+	}
+	value, _, ok := strings.Cut(rest, `"`)
+	return value, ok
+}

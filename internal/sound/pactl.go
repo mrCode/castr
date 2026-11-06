@@ -218,9 +218,24 @@ func loadNullSink(run Runner, name, description string) (modRef, error) {
 // loopback's output vanishes, PipeWire would otherwise relink it to the
 // default -- castr_mix -- and feed castr_mix back into itself. Pinned, it
 // unloads itself instead, and Follow finds the laptop a new output.
-func loadLoopback(run Runner, source, sink string) (modRef, error) {
+//
+// name ("laptop" or "cast_<n>") names its two streams. WirePlumber remembers
+// a stream's volume under its media.name, and a loopback's default one,
+// loopback-<pid>-<n>, is new on every load: so every loopback to the laptop
+// shares one media.name, and every loopback to a receiver another, and
+// WirePlumber's state stays at four entries however often the sound is
+// switched. The quoting is loadNullSink's.
+func loadLoopback(run Runner, source, sink, name string) (modRef, error) {
+	media := "castr_loop_laptop"
+	if name != "laptop" {
+		media = "castr_loop_cast"
+	}
+	props := func(dir string) string {
+		return fmt.Sprintf(`"media.name=%s node.name=castr_loop_%s_%s"`, media, name, dir)
+	}
 	id, err := loadModule(run, loopbackModule, "source="+source, "sink="+sink, "latency_msec=30",
-		"sink_dont_move=true", "source_dont_move=true")
+		"sink_dont_move=true", "source_dont_move=true",
+		"sink_input_properties="+props("out"), "source_output_properties="+props("in"))
 	return modRef{id: id, name: loopbackModule, sig: []string{"source=" + source, "sink=" + sink}}, err
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -233,7 +234,7 @@ func (r *Router) reconcile() error {
 		laptop = laptop || c.choice.toLaptop()
 		switch want := c.choice.toReceiver(); {
 		case want && !c.loopModule.loaded():
-			ref, err := loadLoopback(r.run, mixSink+".monitor", castSinkName(c.n))
+			ref, err := loadLoopback(r.run, mixSink+".monitor", castSinkName(c.n), "cast_"+strconv.Itoa(c.n))
 			if err != nil {
 				errs = append(errs, err)
 				continue
@@ -250,7 +251,7 @@ func (r *Router) reconcile() error {
 	_, laptopPresent := sinkID(sinks, r.laptop)
 	switch {
 	case laptop && !r.laptopLoop.loaded() && r.laptop != "" && laptopPresent:
-		ref, err := loadLoopback(r.run, mixSink+".monitor", r.laptop)
+		ref, err := loadLoopback(r.run, mixSink+".monitor", r.laptop, "laptop")
 		if err != nil {
 			errs = append(errs, err)
 		} else {
