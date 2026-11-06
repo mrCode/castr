@@ -3,6 +3,7 @@ package sound
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -25,7 +26,8 @@ type Router struct {
 	mixModule  int
 	laptopLoop int    // castr_mix -> the laptop; 0 when the laptop is silent
 	previous   string // the default before the first cast
-	laptop     string // the output the laptop plays through now
+	laptop     string // the output the laptop plays through now; "" for none
+	sweep      string // an output whose app streams still need moving into castr_mix
 }
 
 func NewRouter(run Runner, stateDir string) *Router {
@@ -186,7 +188,7 @@ func (r *Router) reconcile() error {
 		}
 	}
 	switch {
-	case laptop && r.laptopLoop == 0:
+	case laptop && r.laptopLoop == 0 && r.laptop != "":
 		id, err := loadLoopback(r.run, mixSink+".monitor", r.laptop)
 		if err != nil {
 			errs = append(errs, err)
@@ -220,13 +222,19 @@ func (r *Router) Detach(castID string) error {
 }
 
 // Follow keeps the routing right while the user changes outputs. The daemon
-// calls it every second while anything is attached. When the default is no
-// longer castr_mix, the user picked a new output: it becomes the laptop, the
-// laptop loopback moves there, castr_mix is made the default again, and the
-// app streams on the new output are moved into castr_mix.
+// calls it every second while anything is attached.
+//   - When the default is no longer castr_mix, the user picked a new output:
+//     it becomes the laptop, the laptop loopback moves there, castr_mix is
+//     made the default again, and the app streams on the new output are
+//     moved into castr_mix.
+//   - When the laptop's output vanished (the default stays castr_mix, so
+//     nothing else would say), the laptop moves to the previous default, or
+//     else to any real output, or else to none.
 //
-// An error means the routing could not be kept and has been restored: every
-// cast has lost its choice.
+// Only a castr_mix confirmed missing ends the routing: Follow then restores
+// and returns an error saying the routing was lost, and every cast has lost
+// its choice. Any other failure is returned as it is, with the routing kept,
+// and the next call retries.
 func (r *Router) Follow() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -234,55 +242,96 @@ func (r *Router) Follow() error {
 	if len(r.casts) == 0 {
 		return nil
 	}
-	if err := r.follow(); err != nil {
-		return errors.Join(fmt.Errorf("the sound routing was lost: %w", err), r.restoreLocked())
-	}
-	return nil
-}
-
-func (r *Router) follow() error {
 	sinks, err := listSinks(r.run)
 	if err != nil {
 		return err
 	}
 	if _, ok := sinkID(sinks, mixSink); !ok {
-		return fmt.Errorf("%s is gone", mixSink)
+		return errors.Join(fmt.Errorf("the sound routing was lost: %s is gone", mixSink), r.restoreLocked())
 	}
+	if err := r.follow(sinks); err != nil {
+		return err
+	}
+	return r.reconcile() // retries a loopback an earlier failure left out
+}
+
+func (r *Router) follow(sinks []sink) error {
 	def, err := defaultSink(r.run)
 	if err != nil {
 		return err
 	}
+	_, defPresent := sinkID(sinks, def)
 	switch {
-	case def == mixSink || def == "":
-		return nil
-	case isCastrName(def):
+	case isCastrName(def) && def != mixSink:
 		// One of castr's cast outputs is not a laptop output.
-		return setDefaultSink(r.run, mixSink)
-	}
-	newID, ok := sinkID(sinks, def)
-	if !ok {
-		return nil // it vanished already; the next tick sees the real default
-	}
-
-	r.laptop = def
-	if err := saveState(r.stateDir, savedState{PreviousDefault: r.previous, LaptopSink: def}); err != nil {
-		return err
-	}
-	if r.laptopLoop != 0 {
-		old := r.laptopLoop
-		id, err := loadLoopback(r.run, mixSink+".monitor", def)
-		if err != nil {
+		if err := setDefaultSink(r.run, mixSink); err != nil {
 			return err
 		}
-		r.laptopLoop = id
+	case def != mixSink && def != "" && defPresent:
+		if err := r.adoptLaptop(def); err != nil {
+			return err
+		}
+		if err := setDefaultSink(r.run, mixSink); err != nil {
+			return err
+		}
+		r.sweep = def
+	default:
+		if _, ok := sinkID(sinks, r.laptop); !ok || r.laptop == "" {
+			if next := laptopFallback(sinks, r.previous); next != r.laptop {
+				if err := r.adoptLaptop(next); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if r.sweep == "" {
+		return nil
+	}
+	// Kept until it succeeds, so a failed move is retried on the next call.
+	id, ok := sinkID(sinks, r.sweep)
+	if !ok {
+		r.sweep = ""
+		return nil
+	}
+	if err := moveAppsOnto(r.run, mixSink, id); err != nil {
+		return err
+	}
+	r.sweep = ""
+	return nil
+}
+
+// laptopFallback picks the laptop's output once its own is gone: the
+// default from before the first cast if it is still there, or else the first
+// real output, or else none.
+func laptopFallback(sinks []sink, previous string) string {
+	if _, ok := sinkID(sinks, previous); ok && previous != "" && !isCastrName(previous) {
+		return previous
+	}
+	for _, s := range sinks {
+		if !strings.HasPrefix(s.name, "castr_") {
+			return s.name
+		}
+	}
+	return ""
+}
+
+// adoptLaptop makes name the laptop's output, recording it first so that a
+// restore after a crash goes back to it. The laptop loopback, if wanted, is
+// rebuilt there before the old one goes.
+func (r *Router) adoptLaptop(name string) error {
+	if err := saveState(r.stateDir, savedState{PreviousDefault: r.previous, LaptopSink: name}); err != nil {
+		return err
+	}
+	r.laptop = name
+	old := r.laptopLoop
+	r.laptopLoop = 0
+	err := r.reconcile()
+	if old != 0 {
 		// The old output usually vanished and took its loopback with it, so a
 		// failure here is expected; Restore sweeps any leftover by name.
 		_ = unloadModule(r.run, old)
 	}
-	if err := setDefaultSink(r.run, mixSink); err != nil {
-		return err
-	}
-	return moveAppsOnto(r.run, mixSink, newID)
+	return err
 }
 
 // Restore undoes all routing and puts the laptop back as it was before the
@@ -307,11 +356,11 @@ func (r *Router) restoreLocked() error {
 	if r.mixModule != 0 {
 		known = append(known, module{id: r.mixModule, name: nullSinkModule})
 	}
-	err := restore(r.run, r.stateDir, r.previous, known)
+	err := restore(r.run, r.stateDir, r.laptop, r.previous, known)
 
 	r.casts = map[string]*cast{}
 	r.mixModule, r.laptopLoop = 0, 0
-	r.previous, r.laptop = "", ""
+	r.previous, r.laptop, r.sweep = "", "", ""
 	return err
 }
 
@@ -319,12 +368,13 @@ func (r *Router) restoreLocked() error {
 // cannot list them, the ones the caller knows it loaded. Every step runs even
 // if an earlier one fails:
 //  1. unload the loopbacks, so nothing feeds castr's outputs;
-//  2. set the default back to previous, only if that output still exists --
-//     otherwise the session manager's own choice stands;
+//  2. set the default to laptop, the output the user was last using, or to
+//     previous if laptop is gone -- only ever to an output that still exists;
+//     with neither left, the session manager's own choice stands;
 //  3. move the streams on castr_mix to the new default;
 //  4. unload castr's outputs;
 //  5. delete the state file.
-func restore(run Runner, stateDir, previous string, known []module) error {
+func restore(run Runner, stateDir, laptop, previous string, known []module) error {
 	var errs []error
 	mods, listErr := listModules(run)
 	if listErr != nil {
@@ -350,12 +400,16 @@ func restore(run Runner, stateDir, previous string, known []module) error {
 	present, err := listSinks(run)
 	errs = append(errs, err)
 	target := ""
-	if _, ok := sinkID(present, previous); ok && previous != "" && !isCastrName(previous) {
-		if err := setDefaultSink(run, previous); err != nil {
-			errs = append(errs, err)
-		} else {
-			target = previous
+	for _, want := range []string{laptop, previous} {
+		if _, ok := sinkID(present, want); !ok || want == "" || isCastrName(want) {
+			continue
 		}
+		if err := setDefaultSink(run, want); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		target = want
+		break
 	}
 	if target == "" {
 		if def, err := defaultSink(run); err == nil && def != "" && !isCastrName(def) {

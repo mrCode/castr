@@ -167,8 +167,13 @@ func loadNullSink(run Runner, name, description string) (int, error) {
 		fmt.Sprintf(`sink_properties="device.description='%s'"`, description))
 }
 
+// loadLoopback copies source into sink. Neither end may be moved: when a
+// loopback's output vanishes, PipeWire would otherwise relink it to the
+// default -- castr_mix -- and feed castr_mix back into itself. Pinned, it
+// unloads itself instead, and Follow finds the laptop a new output.
 func loadLoopback(run Runner, source, sink string) (int, error) {
-	return loadModule(run, loopbackModule, "source="+source, "sink="+sink, "latency_msec=30")
+	return loadModule(run, loopbackModule, "source="+source, "sink="+sink, "latency_msec=30",
+		"sink_dont_move=true", "source_dont_move=true")
 }
 
 func loadModule(run Runner, args ...string) (int, error) {

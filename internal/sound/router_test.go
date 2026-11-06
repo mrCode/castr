@@ -44,6 +44,7 @@ type fakePulse struct {
 
 	defaultErr error
 	defaultOut *string // overrides get-default-sink's output when set
+	failCmd    string  // a pactl command, args joined by spaces, that fails
 }
 
 func newFakePulse() *fakePulse {
@@ -91,9 +92,20 @@ func (f *fakePulse) sinkName(id int) string {
 }
 
 // removeSink makes a sink vanish the way a Bluetooth disconnect does: its
-// streams fall back to the default.
+// streams fall back to the default. A loopback into it that was loaded with
+// sink_dont_move=true unloads itself instead, as PulseAudio's does; one
+// without is relinked to the default like any stream.
 func (f *fakePulse) removeSink(name string) {
 	id := f.sinkID(name)
+	var mods []fakeModule
+	for _, m := range f.modules {
+		if m.name == "module-loopback" && moduleArg(m.args, "sink") == name && moduleArg(m.args, "sink_dont_move") == "true" {
+			f.dropInputsOf(m.id)
+			continue
+		}
+		mods = append(mods, m)
+	}
+	f.modules = mods
 	var kept []fakeSink
 	for _, s := range f.sinks {
 		if s.id != id {
@@ -108,12 +120,34 @@ func (f *fakePulse) removeSink(name string) {
 	}
 }
 
+func moduleArg(args, key string) string {
+	for _, a := range strings.Fields(args) {
+		if k, v, _ := strings.Cut(a, "="); k == key {
+			return v
+		}
+	}
+	return ""
+}
+
+func (f *fakePulse) dropInputsOf(module int) {
+	var inputs []fakeInput
+	for _, i := range f.inputs {
+		if i.owner != module {
+			inputs = append(inputs, i)
+		}
+	}
+	f.inputs = inputs
+}
+
 func (f *fakePulse) run(name string, args ...string) (string, error) {
 	f.calls = append(f.calls, append([]string{name}, args...))
 	if name != "pactl" {
 		return "", fmt.Errorf("unexpected command %s", name)
 	}
 	cmd := strings.Join(args, " ")
+	if f.failCmd != "" && cmd == f.failCmd {
+		return "", errors.New("Connection failure: Connection refused")
+	}
 	switch {
 	case cmd == "get-default-sink":
 		if f.defaultErr != nil {
@@ -230,13 +264,7 @@ func (f *fakePulse) unload(id int) error {
 		return errors.New("No such entity")
 	}
 	f.modules = kept
-	var inputs []fakeInput
-	for _, i := range f.inputs {
-		if i.owner != id {
-			inputs = append(inputs, i)
-		}
-	}
-	f.inputs = inputs
+	f.dropInputsOf(id)
 	for _, s := range f.sinks {
 		if s.module == id {
 			if f.def == s.name { // the session manager falls back to another sink
@@ -263,6 +291,36 @@ func (f *fakePulse) hasLoopback(source, sink string) bool {
 		}
 	}
 	return false
+}
+
+// checkLoopbacksNeverMove: a castr loopback PipeWire relinks after its
+// output vanishes would land on the default, castr_mix, and feed castr_mix
+// back into itself.
+func (f *fakePulse) checkLoopbacksNeverMove(t *testing.T) {
+	t.Helper()
+	n := 0
+	for _, m := range f.castrModules() {
+		if m.name != "module-loopback" {
+			continue
+		}
+		n++
+		if moduleArg(m.args, "sink_dont_move") != "true" || moduleArg(m.args, "source_dont_move") != "true" {
+			t.Errorf("loopback %q may be moved by PipeWire", m.args)
+		}
+	}
+	if n == 0 {
+		t.Error("no castr loopback to check")
+	}
+}
+
+// checkNoFeedback: no castr loopback stream may play into castr_mix.
+func (f *fakePulse) checkNoFeedback(t *testing.T) {
+	t.Helper()
+	for _, i := range f.inputs {
+		if i.owner != 0 && i.sink == f.sinkID("castr_mix") {
+			t.Errorf("castr's own loopback stream %d plays into castr_mix", i.index)
+		}
+	}
 }
 
 func (f *fakePulse) castrModules() []fakeModule {
@@ -372,6 +430,7 @@ func TestAttachRoutesTheLaptopIntoCastrAndTheCastStartsOnTV(t *testing.T) {
 	if f.hasLoopback("castr_mix.monitor", realSink) {
 		t.Error("a loopback to the real sink exists, so the laptop is not silent")
 	}
+	f.checkLoopbacksNeverMove(t)
 	if src != "castr_cast_1.monitor" {
 		t.Errorf("source %q, want castr_cast_1.monitor", src)
 	}
@@ -436,6 +495,7 @@ func TestTheChoicesCombineAcrossCasts(t *testing.T) {
 	if !f.hasLoopback("castr_mix.monitor", "castr_cast_1") || !f.hasLoopback("castr_mix.monitor", realSink) {
 		t.Error("A=both: want A's receiver and the laptop to play")
 	}
+	f.checkLoopbacksNeverMove(t)
 	if c, _ := r.Choice("airplay:A"); c != Both {
 		t.Errorf("Choice(A) = %q, want both", c)
 	}
@@ -518,27 +578,106 @@ func TestTheLastDetachRestoresEverything(t *testing.T) {
 
 func TestRestoreWhenTheSavedSinkIsGone(t *testing.T) {
 	// Bluetooth disconnected mid-cast: castr must not set a default that does
-	// not exist, and must leave WirePlumber's choice in place.
-	f := newFakePulse()
-	f.addSink("speaker2", 0)
-	dir := t.TempDir()
-	r := NewRouter(f.run, dir)
-	mustAttach(t, r, "airplay:A")
-	f.removeSink(realSink)
+	// not exist, and with neither saved output left it leaves WirePlumber's
+	// choice in place.
+	t.Run("neither saved output is left", func(t *testing.T) {
+		f := newFakePulse()
+		f.addSink("speaker2", 0)
+		dir := t.TempDir()
+		r := NewRouter(f.run, dir)
+		mustAttach(t, r, "airplay:A")
+		f.removeSink(realSink)
 
-	if err := r.Detach("airplay:A"); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, c := range f.calls {
-		if len(c) > 2 && c[1] == "set-default-sink" && c[2] == realSink {
-			t.Errorf("ran %v against a sink that is gone", c)
+		if err := r.Detach("airplay:A"); err != nil {
+			t.Fatal(err)
 		}
+
+		for _, c := range f.calls {
+			if len(c) > 1 && c[1] == "set-default-sink" && c[2] != "castr_mix" {
+				t.Errorf("ran %v; with both saved outputs gone the session manager's choice stands", c)
+			}
+		}
+		if m := f.castrModules(); len(m) != 0 {
+			t.Errorf("castr modules left: %v", m)
+		}
+		stateGone(t, dir)
+	})
+
+	t.Run("the laptop output is gone, the previous default is not", func(t *testing.T) {
+		f := newFakePulse()
+		dir := t.TempDir()
+		r := NewRouter(f.run, dir)
+		mustAttach(t, r, "airplay:A")
+		f.addSink("bluez_x", 0)
+		f.def = "bluez_x"
+		if err := r.Follow(); err != nil {
+			t.Fatal(err)
+		}
+		f.removeSink("bluez_x")
+
+		if err := r.Detach("airplay:A"); err != nil {
+			t.Fatal(err)
+		}
+
+		for _, c := range f.calls {
+			if len(c) > 2 && c[1] == "set-default-sink" && c[2] == "bluez_x" && f.sinkID("bluez_x") < 0 {
+				t.Errorf("ran %v against a sink that is gone", c)
+			}
+		}
+		if f.def != realSink {
+			t.Errorf("default is %s, want the previous default %s", f.def, realSink)
+		}
+		f.allAppsOn(t, realSink)
+		if m := f.castrModules(); len(m) != 0 {
+			t.Errorf("castr modules left: %v", m)
+		}
+		stateGone(t, dir)
+	})
+}
+
+func TestRestoreKeepsTheOutputTheUserSwitchedTo(t *testing.T) {
+	// Headphones plugged in mid-cast are what the user is using now; putting
+	// the old speakers back would undo their choice.
+	switchMidCast := func(t *testing.T) (*fakePulse, *Router, string) {
+		f := newFakePulse()
+		dir := t.TempDir()
+		r := NewRouter(f.run, dir)
+		mustAttach(t, r, "airplay:A")
+		f.addSink("bluez_x", 0)
+		f.def = "bluez_x"
+		f.addApp("bluez_x")
+		if err := r.Follow(); err != nil {
+			t.Fatal(err)
+		}
+		return f, r, dir
 	}
-	if m := f.castrModules(); len(m) != 0 {
-		t.Errorf("castr modules left: %v", m)
-	}
-	stateGone(t, dir)
+
+	t.Run("the last detach", func(t *testing.T) {
+		f, r, dir := switchMidCast(t)
+		if err := r.Detach("airplay:A"); err != nil {
+			t.Fatal(err)
+		}
+		if f.def != "bluez_x" {
+			t.Errorf("default is %s, want bluez_x", f.def)
+		}
+		f.allAppsOn(t, "bluez_x")
+		stateGone(t, dir)
+	})
+
+	t.Run("recovery after a crash", func(t *testing.T) {
+		f, _, dir := switchMidCast(t)
+		if err := Recover(f.run, dir); err != nil {
+			t.Fatal(err)
+		}
+		if f.def != "bluez_x" {
+			t.Errorf("default is %s, want bluez_x", f.def)
+		}
+		f.allAppsOn(t, "bluez_x")
+		if m := f.castrModules(); len(m) != 0 {
+			t.Errorf("castr modules left: %v", m)
+		}
+		stateGone(t, dir)
+	})
 }
 
 func TestFollowAdoptsANewDefaultOutput(t *testing.T) {
@@ -606,6 +745,143 @@ func TestFollowGivesUpWhenCastrMixDisappears(t *testing.T) {
 	if _, ok := r.Choice("airplay:A"); ok {
 		t.Error("the cast still reports a choice after the routing was lost")
 	}
+}
+
+func TestFollowSurvivesATransientPactlFailure(t *testing.T) {
+	// Only a confirmed-missing castr_mix ends the routing; anything else is
+	// retried on the next tick.
+	for _, cmd := range []string{"list short sinks", "get-default-sink", "--format=json list sink-inputs"} {
+		t.Run(cmd, func(t *testing.T) {
+			f := newFakePulse()
+			dir := t.TempDir()
+			r := NewRouter(f.run, dir)
+			mustAttach(t, r, "airplay:A")
+			mustSet(t, r, "airplay:A", Both)
+			// A changed default makes Follow reach every query it makes.
+			f.addSink("bluez_x", 0)
+			f.def = "bluez_x"
+			f.addApp("bluez_x")
+			f.failCmd = cmd
+
+			err := r.Follow()
+			if err == nil && cmd != "--format=json list sink-inputs" {
+				t.Fatal("Follow hid the failure")
+			}
+			if err != nil && strings.Contains(err.Error(), "lost") {
+				t.Errorf("Follow = %v; a transient failure is not a lost routing", err)
+			}
+			if c, ok := r.Choice("airplay:A"); !ok || c != Both {
+				t.Errorf("Choice = %q, %v; want both, still routed", c, ok)
+			}
+			if _, err := os.Stat(filepath.Join(dir, StateFile)); err != nil {
+				t.Errorf("state file: %v; the routing was torn down", err)
+			}
+			if !f.hasLoopback("castr_mix.monitor", "castr_cast_1") {
+				t.Error("A's receiver lost its sound")
+			}
+
+			f.failCmd = ""
+			if err := r.Follow(); err != nil {
+				t.Fatalf("the retry: %v", err)
+			}
+			if f.def != "castr_mix" {
+				t.Errorf("after the retry the default is %s, want castr_mix", f.def)
+			}
+			if !f.hasLoopback("castr_mix.monitor", "bluez_x") {
+				t.Error("after the retry the laptop does not play on bluez_x")
+			}
+			f.allAppsOn(t, "castr_mix")
+			f.checkNoFeedback(t)
+		})
+	}
+}
+
+func TestFollowFindsANewOutputWhenTheLaptopOutputDisappears(t *testing.T) {
+	// The default stays castr_mix when the laptop's output vanishes, so
+	// nothing else would tell castr: the laptop would stay silent.
+	onBluetooth := func(t *testing.T, extra ...string) (*fakePulse, *Router, string) {
+		f := newFakePulse()
+		for _, s := range extra {
+			f.addSink(s, 0)
+		}
+		dir := t.TempDir()
+		r := NewRouter(f.run, dir)
+		mustAttach(t, r, "airplay:A")
+		mustSet(t, r, "airplay:A", Laptop)
+		f.addSink("bluez_x", 0)
+		f.def = "bluez_x"
+		if err := r.Follow(); err != nil {
+			t.Fatal(err)
+		}
+		f.removeSink("bluez_x")
+		return f, r, dir
+	}
+
+	t.Run("back to the previous default", func(t *testing.T) {
+		f, r, dir := onBluetooth(t)
+		if err := r.Follow(); err != nil {
+			t.Fatal(err)
+		}
+		if !f.hasLoopback("castr_mix.monitor", realSink) {
+			t.Error("the laptop does not play on the previous default")
+		}
+		if s := readState(t, dir); s["laptop_sink"] != realSink {
+			t.Errorf("laptop_sink %q, want %s", s["laptop_sink"], realSink)
+		}
+		if f.def != "castr_mix" {
+			t.Errorf("default is %s, want castr_mix", f.def)
+		}
+		f.checkNoFeedback(t)
+		f.checkLoopbacksNeverMove(t)
+
+		n := len(f.calls)
+		if err := r.Follow(); err != nil {
+			t.Fatal(err)
+		}
+		if c := f.changingCallsSince(n); len(c) != 0 {
+			t.Errorf("a second Follow changed things: %v", c)
+		}
+	})
+
+	t.Run("to another real output", func(t *testing.T) {
+		f, r, dir := onBluetooth(t, "speaker2")
+		f.removeSink(realSink)
+		if err := r.Follow(); err != nil {
+			t.Fatal(err)
+		}
+		if !f.hasLoopback("castr_mix.monitor", "speaker2") {
+			t.Error("the laptop does not play on speaker2")
+		}
+		if s := readState(t, dir); s["laptop_sink"] != "speaker2" {
+			t.Errorf("laptop_sink %q, want speaker2", s["laptop_sink"])
+		}
+		f.checkNoFeedback(t)
+	})
+
+	t.Run("no real output left", func(t *testing.T) {
+		f, r, dir := onBluetooth(t)
+		f.removeSink(realSink)
+		if err := r.Follow(); err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range f.castrModules() {
+			if m.name == "module-loopback" && moduleArg(m.args, "sink") != "castr_cast_1" && moduleArg(m.args, "sink") != "" {
+				t.Errorf("a laptop loopback exists with no output: %q", m.args)
+			}
+		}
+		if s := readState(t, dir); s["laptop_sink"] != "" {
+			t.Errorf("laptop_sink %q, want none", s["laptop_sink"])
+		}
+		f.checkNoFeedback(t)
+
+		n := len(f.calls)
+		if err := r.Follow(); err != nil {
+			t.Fatal(err)
+		}
+		if c := f.changingCallsSince(n); len(c) != 0 {
+			t.Errorf("a second Follow changed things: %v", c)
+		}
+	})
 }
 
 func TestRecoverRestoresAPendingRouting(t *testing.T) {
