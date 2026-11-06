@@ -779,6 +779,11 @@ func TestACastStartsEvenWhenSoundCannotBeRouted(t *testing.T) {
 	if !strings.Contains(s.SoundNote, "pactl") {
 		t.Errorf("sound note = %q, want a reason naming pactl", s.SoundNote)
 	}
+	// Unrouted, a Chromecast plays its silent track: the note must not say
+	// the TV has the sound.
+	if !strings.HasPrefix(s.SoundNote, "sound stays on the laptop: ") || strings.Contains(s.SoundNote, "TV") {
+		t.Errorf("sound note = %q, want \"sound stays on the laptop: <reason>\"", s.SoundNote)
+	}
 	if got := r.daemon.AudioSource("a"); got != "" {
 		t.Errorf("audio source = %q, want the helper's default", got)
 	}

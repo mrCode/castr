@@ -69,9 +69,12 @@ Chromecasts get real sound too. "Both" on a Chromecast echoes: the television
 runs one to three seconds behind, so you hear everything twice. Use it on an
 Apple TV, or not at all.
 
-castr routes sound with `pactl` (the `libpulse` package). If it cannot, the
-cast still starts, with sound on both, and the widget says why. The laptop's
-sound always comes back afterwards, even if castrd is killed.
+castr routes sound with `pactl` (the `libpulse` package), and keeps
+WirePlumber's chosen output with `pw-metadata` (from `pipewire`). If it cannot
+route, the cast still starts with the laptop's sound left alone, and the widget
+says why: an Apple TV then plays the laptop's sound too, and a Chromecast stays
+silent. The laptop's sound always comes back afterwards, even if castrd is
+killed, and WirePlumber's chosen output with it.
 
 `[airplay] audio = false` turns sound off for every receiver.
 

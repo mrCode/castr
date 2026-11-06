@@ -34,6 +34,7 @@ depends=(
   'gst-plugins-bad'       # H.264 parsing, HLS output
   'gst-libav'             # the AAC track a Chromecast refuses to play without
   'libpulse'              # pactl: routes a cast's sound
+  'pipewire'              # pw-metadata: keeps WirePlumber's chosen output
 )
 
 # The encoder is chosen at runtime: a machine with Intel graphics needs a

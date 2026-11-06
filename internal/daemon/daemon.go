@@ -427,14 +427,15 @@ type Sound interface {
 func (d *Daemon) routesSound() bool { return d.SoundOn && d.Sound != nil }
 
 // attachSound routes a new cast's sound and reports whether it did. When it
-// cannot, the cast goes ahead with its sound on the laptop and the TV, as
-// before castr routed sound, and the note says why.
+// cannot, the cast goes ahead with the laptop's sound left alone, and the
+// note says why. An Apple TV then plays the laptop's sound too, as before
+// castr routed sound; a Chromecast plays its silent track.
 func (d *Daemon) attachSound(id string) bool {
 	source, err := d.Sound.Attach(id)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if err != nil {
-		d.soundNotes[id] = "sound stays on the laptop and the TV: " + firstLine(err)
+		d.soundNotes[id] = "sound stays on the laptop: " + firstLine(err)
 		return false
 	}
 	d.soundSources[id] = source

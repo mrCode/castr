@@ -532,7 +532,7 @@ func TestCastrSoundWithNoChoicePrintsTheCurrentOne(t *testing.T) {
 	h.daemon.sessions = []daemon.SessionJSON{
 		{DeviceID: "airplay:A", Name: "Meeting Room", State: "streaming", Sound: "laptop"},
 		{DeviceID: "airplay:B", Name: "Den", State: "streaming",
-			SoundNote: "sound stays on the laptop and the TV: there is no default output"},
+			SoundNote: "sound stays on the laptop: there is no default output"},
 	}
 
 	if code := h.app.Run([]string{"sound", "airplay:A"}); code != 0 {
