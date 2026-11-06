@@ -495,3 +495,62 @@ func TestHumanOutputIsUnchangedWithoutTheFlag(t *testing.T) {
 		t.Errorf("plain list emitted JSON: %q", h.out)
 	}
 }
+
+func TestCastrSoundSendsTheChoice(t *testing.T) {
+	h := newHarness(t)
+
+	if code := h.app.Run([]string{"sound", "airplay:A", "both"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.errOut)
+	}
+	got := h.daemon.seen(daemon.CmdSound)
+	if len(got) != 1 || got[0].DeviceID != "airplay:A" || got[0].Sound != "both" {
+		t.Errorf("sound = %+v, want one request for airplay:A with both", got)
+	}
+
+	h.errOut.Reset()
+	if code := h.app.Run([]string{"sound"}); code == 0 {
+		t.Error("sound with no id succeeded")
+	}
+	if !strings.Contains(h.errOut.String(), "castr sound <id>") {
+		t.Errorf("error = %q, want the usage", h.errOut)
+	}
+}
+
+func TestCastrSoundRejectsAnUnknownChoiceBeforeTheDaemonIsTroubled(t *testing.T) {
+	h := newHarness(t)
+
+	if code := h.app.Run([]string{"sound", "airplay:A", "kitchen"}); code == 0 {
+		t.Error("an unknown choice succeeded")
+	}
+	if len(h.daemon.seen(daemon.CmdSound)) != 0 {
+		t.Error("the daemon was asked anyway")
+	}
+}
+
+func TestCastrSoundWithNoChoicePrintsTheCurrentOne(t *testing.T) {
+	h := newHarness(t)
+	h.daemon.sessions = []daemon.SessionJSON{
+		{DeviceID: "airplay:A", Name: "Meeting Room", State: "streaming", Sound: "laptop"},
+		{DeviceID: "airplay:B", Name: "Den", State: "streaming",
+			SoundNote: "sound stays on the laptop and the TV: there is no default output"},
+	}
+
+	if code := h.app.Run([]string{"sound", "airplay:A"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.errOut)
+	}
+	if got := strings.TrimSpace(h.out.String()); got != "laptop" {
+		t.Errorf("output = %q, want laptop", got)
+	}
+
+	h.out.Reset()
+	if code := h.app.Run([]string{"sound", "airplay:B"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.errOut)
+	}
+	if !strings.Contains(h.out.String(), "no default output") {
+		t.Errorf("output = %q, want the note", h.out)
+	}
+
+	if code := h.app.Run([]string{"sound", "airplay:C"}); code == 0 {
+		t.Error("asking about a receiver that is not casting succeeded")
+	}
+}

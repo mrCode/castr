@@ -12,6 +12,7 @@ import (
 	"github.com/mrCode/castr/internal/daemon"
 	"github.com/mrCode/castr/internal/picker"
 	"github.com/mrCode/castr/internal/session"
+	"github.com/mrCode/castr/internal/sound"
 	"github.com/mrCode/castr/internal/ui"
 )
 
@@ -43,6 +44,8 @@ const Usage = `castr — cast this screen to an AirPlay receiver
   castr pin [id] [code|-]    send the code a receiver is showing; asks for it
                              if not given, finds the receiver if not named,
                              and reads it from stdin given "-"
+  castr sound <id> [choice]  where a cast's sound plays: tv, laptop or both;
+                             with no choice, show the current one
   castr add <address> [name] register a receiver mDNS cannot see
   castr forget <id>          drop a registered receiver
   castr quit                 stop the background daemon
@@ -71,6 +74,8 @@ func (a *App) Run(args []string) int {
 		return a.bar()
 	case "pin":
 		return a.pin(args[1:])
+	case "sound":
+		return a.sound(args[1:])
 	case "add":
 		return a.add(args[1:])
 	case "forget":
@@ -266,6 +271,42 @@ func (a *App) emitJSON(payload any) int {
 	}
 	fmt.Fprintln(a.Out, string(raw))
 	return 0
+}
+
+// sound sets a cast's sound choice, or with no choice prints it -- or, when
+// the cast has none, the note saying why.
+func (a *App) sound(args []string) int {
+	if len(args) == 0 {
+		return a.fail("sound needs a receiver id (see: castr status)\n\n" + Usage)
+	}
+	id := args[0]
+	if len(args) > 1 {
+		choice, err := sound.ParseChoice(args[1])
+		if err != nil {
+			return a.fail(err.Error())
+		}
+		return a.run(func() error { return a.Client.SetSound(id, string(choice)) })
+	}
+
+	sessions, err := a.Client.Sessions()
+	if err != nil {
+		return a.fail(err.Error())
+	}
+	for _, s := range sessions {
+		if s.DeviceID != id {
+			continue
+		}
+		switch {
+		case s.Sound != "":
+			fmt.Fprintln(a.Out, s.Sound)
+		case s.SoundNote != "":
+			fmt.Fprintln(a.Out, s.SoundNote)
+		default:
+			fmt.Fprintln(a.Out, "no sound choice: sound is off")
+		}
+		return 0
+	}
+	return a.fail(fmt.Sprintf("not casting to %s", id))
 }
 
 func (a *App) add(args []string) int {

@@ -2,13 +2,16 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/mrCode/castr/internal/discovery"
 	"github.com/mrCode/castr/internal/session"
+	"github.com/mrCode/castr/internal/sound"
 )
 
 // fakeBackend models a backend's OBSERVABLE behaviour: it reports state
@@ -469,5 +472,507 @@ func TestStoppingAStreamingCastClearsTheRecord(t *testing.T) {
 
 	if sessions := r.daemon.Sessions(); len(sessions) != 0 {
 		t.Errorf("sessions = %+v after a successful stop, want none", sessions)
+	}
+}
+
+// fakeSound models the sound router's observable behaviour and records every
+// call, so a test can count attaches and detaches.
+type fakeSound struct {
+	mu        sync.Mutex
+	attachErr error
+	followErr error
+	lose      bool // the next failing Follow forgets every cast, as a lost routing does
+	choices   map[string]sound.Choice
+	calls     []string // "attach:a", "detach:a", "set:a:laptop", "follow", "restore"
+}
+
+func newFakeSound() *fakeSound { return &fakeSound{choices: map[string]sound.Choice{}} }
+
+func (f *fakeSound) record(call string) {
+	f.calls = append(f.calls, call)
+}
+
+func (f *fakeSound) Attach(id string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("attach:" + id)
+	if f.attachErr != nil {
+		return "", f.attachErr
+	}
+	f.choices[id] = sound.TV
+	return "castr_cast_" + id + ".monitor", nil
+}
+
+func (f *fakeSound) Set(id string, c sound.Choice) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("set:" + id + ":" + string(c))
+	if _, ok := f.choices[id]; !ok {
+		return errors.New("not routed")
+	}
+	f.choices[id] = c
+	return nil
+}
+
+func (f *fakeSound) Choice(id string) (sound.Choice, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.choices[id]
+	return c, ok
+}
+
+func (f *fakeSound) Detach(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("detach:" + id)
+	delete(f.choices, id)
+	return nil
+}
+
+func (f *fakeSound) Follow() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("follow")
+	if f.followErr != nil && f.lose {
+		f.choices = map[string]sound.Choice{}
+	}
+	return f.followErr
+}
+
+func (f *fakeSound) Restore() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("restore")
+	f.choices = map[string]sound.Choice{}
+	return nil
+}
+
+func (f *fakeSound) count(call string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		if c == call {
+			n++
+		}
+	}
+	return n
+}
+
+func (f *fakeSound) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func (r *rig) withSound() *fakeSound {
+	f := newFakeSound()
+	r.daemon.Sound = f
+	r.daemon.SoundOn = true
+	return f
+}
+
+// status is one session as `castr status --json` reports it.
+func (r *rig) status(t *testing.T, id string) (SessionJSON, bool) {
+	t.Helper()
+	resp := r.daemon.Handle(context.Background(), Request{Cmd: CmdStatus})
+	if !resp.Ok {
+		t.Fatalf("status failed: %s", resp.Error)
+	}
+	var data struct {
+		Sessions []SessionJSON `json:"sessions"`
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range data.Sessions {
+		if s.DeviceID == id {
+			return s, true
+		}
+	}
+	return SessionJSON{}, false
+}
+
+func TestACastStartsWithItsSoundOnTheTV(t *testing.T) {
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+
+	if err := r.daemon.Start(context.Background(), "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := snd.count("attach:a"); n != 1 {
+		t.Errorf("attach called %d times, want once", n)
+	}
+	s, ok := r.status(t, "a")
+	if !ok {
+		t.Fatal("no session for a")
+	}
+	if s.Sound != "tv" {
+		t.Errorf("sound = %q, want tv", s.Sound)
+	}
+	if s.SoundNote != "" {
+		t.Errorf("sound note = %q, want none", s.SoundNote)
+	}
+	if got := r.daemon.AudioSource("a"); got != "castr_cast_a.monitor" {
+		t.Errorf("audio source = %q, want the one Attach returned", got)
+	}
+}
+
+func TestTheSourceIsKnownBeforeTheBackendStarts(t *testing.T) {
+	// The backend asks for the source while it starts the receiver's capture,
+	// so Attach has to have run first.
+	r := newRig(t, dev("a", "TV"))
+	r.withSound()
+	var seen string
+	r.daemon.Backends[discovery.ProtocolAirPlay] = startHook{r.backend, func() {
+		seen = r.daemon.AudioSource("a")
+	}}
+
+	if err := r.daemon.Start(context.Background(), "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	if seen != "castr_cast_a.monitor" {
+		t.Errorf("source during backend start = %q, want the attached one", seen)
+	}
+}
+
+// startHook runs a function at the start of the backend's Start.
+type startHook struct {
+	*fakeBackend
+	hook func()
+}
+
+func (h startHook) Start(ctx context.Context, device discovery.Device, mode string) error {
+	h.hook()
+	return h.fakeBackend.Start(ctx, device, mode)
+}
+
+func TestSoundIsDetachedWhenStartFails(t *testing.T) {
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	r.backend.startErr = errors.New("doubletake exited before mirroring started")
+	r.backend.states = nil
+
+	if err := r.daemon.Start(context.Background(), "a", session.ModeMirror); err == nil {
+		t.Fatal("want the start error")
+	}
+
+	if n := snd.count("detach:a"); n != 1 {
+		t.Errorf("detach called %d times, want once", n)
+	}
+	if got := len(r.daemon.Sessions()); got != 0 {
+		t.Errorf("%d sessions remain, want none", got)
+	}
+	if got := r.daemon.AudioSource("a"); got != "" {
+		t.Errorf("audio source = %q after a failed start, want none", got)
+	}
+}
+
+func TestSoundIsDetachedOnceWhenTheBackendReportsTheFailure(t *testing.T) {
+	// The backend emits Failed AND returns the error: two end paths for one
+	// cast, and still one detach.
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	r.backend.startErr = errors.New("no route to host")
+	r.backend.states = []session.State{session.Connecting, session.Failed}
+
+	if err := r.daemon.Start(context.Background(), "a", session.ModeMirror); err == nil {
+		t.Fatal("want the start error")
+	}
+
+	if n := snd.count("detach:a"); n != 1 {
+		t.Errorf("detach called %d times, want once", n)
+	}
+}
+
+func TestTheLastCastToEndRestoresSound(t *testing.T) {
+	for _, order := range []string{"stop-first", "fail-first"} {
+		t.Run(order, func(t *testing.T) {
+			r := newRig(t, dev("a", "TV"), dev("b", "Den"))
+			snd := r.withSound()
+			ctx := context.Background()
+			for _, id := range []string{"a", "b"} {
+				if err := r.daemon.Start(ctx, id, session.ModeMirror); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			stop := func() {
+				if err := r.daemon.Stop(ctx, "a"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fail := func() { r.daemon.OnState(dev("b", "Den"), session.Failed, "network down") }
+			if order == "stop-first" {
+				stop()
+				fail()
+			} else {
+				fail()
+				stop()
+			}
+			// Stragglers for casts already ended change nothing.
+			r.daemon.OnState(dev("a", "TV"), session.Failed, "late")
+			r.daemon.OnState(dev("b", "Den"), session.Idle, "late")
+
+			for _, id := range []string{"a", "b"} {
+				if n := snd.count("detach:" + id); n != 1 {
+					t.Errorf("detach:%s called %d times, want once", id, n)
+				}
+			}
+			if len(snd.choices) != 0 {
+				t.Errorf("still routed: %v", snd.choices)
+			}
+		})
+	}
+}
+
+func TestSoundOffTouchesNothing(t *testing.T) {
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	r.daemon.SoundOn = false
+	ctx := context.Background()
+
+	if err := r.daemon.Start(ctx, "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := r.status(t, "a")
+	r.daemon.FollowSound()
+	if err := r.daemon.SetSound("a", sound.Laptop); err == nil {
+		t.Error("set sound succeeded with sound off")
+	}
+	if err := r.daemon.Stop(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := snd.callCount(); n != 0 {
+		t.Errorf("sound was called %d times with sound off: %v", n, snd.calls)
+	}
+	if s.Sound != "" || s.SoundNote != "" {
+		t.Errorf("sound = %q, note = %q, want both empty", s.Sound, s.SoundNote)
+	}
+}
+
+func TestACastStartsEvenWhenSoundCannotBeRouted(t *testing.T) {
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	snd.attachErr = errors.New("pactl: executable file not found in $PATH")
+
+	if err := r.daemon.Start(context.Background(), "a", session.ModeMirror); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	s, ok := r.status(t, "a")
+	if !ok || s.State != string(session.Streaming) {
+		t.Fatalf("session = %+v, want streaming", s)
+	}
+	if s.Sound != "" {
+		t.Errorf("sound = %q, want none", s.Sound)
+	}
+	if !strings.Contains(s.SoundNote, "pactl") {
+		t.Errorf("sound note = %q, want a reason naming pactl", s.SoundNote)
+	}
+	if got := r.daemon.AudioSource("a"); got != "" {
+		t.Errorf("audio source = %q, want the helper's default", got)
+	}
+
+	if err := r.daemon.Stop(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	if n := snd.count("detach:a"); n != 0 {
+		t.Errorf("detach called %d times for a cast that never attached", n)
+	}
+}
+
+func TestSetSoundChangesOnlyThatCast(t *testing.T) {
+	r := newRig(t, dev("a", "TV"), dev("b", "Den"))
+	snd := r.withSound()
+	ctx := context.Background()
+	for _, id := range []string{"a", "b"} {
+		if err := r.daemon.Start(ctx, id, session.ModeMirror); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := r.daemon.SetSound("a", sound.Laptop); err != nil {
+		t.Fatal(err)
+	}
+
+	if a, _ := r.status(t, "a"); a.Sound != "laptop" {
+		t.Errorf("a = %q, want laptop", a.Sound)
+	}
+	if b, _ := r.status(t, "b"); b.Sound != "tv" {
+		t.Errorf("b = %q, want tv", b.Sound)
+	}
+	if err := r.daemon.SetSound("nope", sound.Laptop); err == nil {
+		t.Error("set sound succeeded for a receiver that is not casting")
+	}
+	if n := snd.count("set:nope:laptop"); n != 0 {
+		t.Error("the router was asked about a receiver that is not casting")
+	}
+}
+
+func TestSetSoundRefusesACastWithNoChoice(t *testing.T) {
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	snd.attachErr = errors.New("there is no default output")
+	if err := r.daemon.Start(context.Background(), "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.daemon.SetSound("a", sound.Laptop); err == nil {
+		t.Error("set sound succeeded for a cast whose sound is not routed")
+	}
+}
+
+func TestALostRoutingLeavesANoteOnEveryCast(t *testing.T) {
+	r := newRig(t, dev("a", "TV"), dev("b", "Den"))
+	snd := r.withSound()
+	ctx := context.Background()
+	for _, id := range []string{"a", "b"} {
+		if err := r.daemon.Start(ctx, id, session.ModeMirror); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snd.mu.Lock()
+	snd.followErr = errors.New("the sound routing was lost: castr_mix is gone")
+	snd.lose = true
+	snd.mu.Unlock()
+
+	r.daemon.FollowSound()
+
+	for _, id := range []string{"a", "b"} {
+		s, _ := r.status(t, id)
+		if s.Sound != "" {
+			t.Errorf("%s: sound = %q, want none after the routing was lost", id, s.Sound)
+		}
+		if !strings.Contains(s.SoundNote, "lost") {
+			t.Errorf("%s: sound note = %q, want the reason", id, s.SoundNote)
+		}
+	}
+	if err := r.daemon.SetSound("a", sound.Both); err == nil {
+		t.Error("set sound succeeded after the routing was lost")
+	}
+}
+
+func TestATransientFollowErrorChangesNothing(t *testing.T) {
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	if err := r.daemon.Start(context.Background(), "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	snd.mu.Lock()
+	snd.followErr = errors.New("pactl list short sinks: signal: killed")
+	snd.mu.Unlock()
+
+	r.daemon.FollowSound()
+
+	s, _ := r.status(t, "a")
+	if s.Sound != "tv" || s.SoundNote != "" {
+		t.Errorf("sound = %q, note = %q, want tv and no note", s.Sound, s.SoundNote)
+	}
+}
+
+func TestFollowIsNotCalledWithNothingAttached(t *testing.T) {
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+
+	r.daemon.FollowSound()
+
+	if n := snd.count("follow"); n != 0 {
+		t.Errorf("follow called %d times with nothing casting", n)
+	}
+}
+
+func TestARestartKeepsItsRoutingAndGoesBackToTheTV(t *testing.T) {
+	// Switching mirror to extend starts the same receiver again. Its sound
+	// stays routed -- a second Attach would be refused -- and the new cast
+	// starts on TV like any other.
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	ctx := context.Background()
+	if err := r.daemon.Start(ctx, "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.daemon.SetSound("a", sound.Laptop); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.daemon.Start(ctx, "a", session.ModeExtend); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := snd.count("attach:a"); n != 1 {
+		t.Errorf("attach called %d times, want once", n)
+	}
+	if s, _ := r.status(t, "a"); s.Sound != "tv" {
+		t.Errorf("sound = %q after the restart, want tv", s.Sound)
+	}
+}
+
+func TestARefusedRestartKeepsTheOldCastsSound(t *testing.T) {
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	ctx := context.Background()
+	if err := r.daemon.Start(ctx, "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.daemon.SetSound("a", sound.Both); err != nil {
+		t.Fatal(err)
+	}
+	r.backend.mu.Lock()
+	r.backend.startErr = session.ErrRefused
+	r.backend.states = nil
+	r.backend.mu.Unlock()
+
+	if err := r.daemon.Start(ctx, "a", session.ModeExtend); !errors.Is(err, session.ErrRefused) {
+		t.Fatalf("err = %v, want ErrRefused", err)
+	}
+
+	if n := snd.count("detach:a"); n != 0 {
+		t.Errorf("detach called %d times for a cast still live", n)
+	}
+	if s, _ := r.status(t, "a"); s.Sound != "both" {
+		t.Errorf("sound = %q, want the old cast's choice kept", s.Sound)
+	}
+}
+
+func TestAStaleCastIsDetachedWhenTheBackendHasNoRecordOfIt(t *testing.T) {
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	ctx := context.Background()
+	if err := r.daemon.Start(ctx, "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	r.backend.mu.Lock()
+	r.backend.stopErr = session.ErrNoSession
+	r.backend.mu.Unlock()
+
+	if err := r.daemon.Stop(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := snd.count("detach:a"); n != 1 {
+		t.Errorf("detach called %d times, want once", n)
+	}
+}
+
+func TestAFailedStopKeepsTheSound(t *testing.T) {
+	// The teardown failed and the cast is still live, so is its sound.
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	ctx := context.Background()
+	if err := r.daemon.Start(ctx, "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	r.backend.mu.Lock()
+	r.backend.stopErr = errors.New("output still present")
+	r.backend.mu.Unlock()
+
+	if err := r.daemon.Stop(ctx, "a"); err == nil {
+		t.Fatal("want the stop error")
+	}
+	if n := snd.count("detach:a"); n != 0 {
+		t.Errorf("detach called %d times for a cast still live", n)
 	}
 }

@@ -361,3 +361,34 @@ func TestAnAbsentRuntimeDirectoryFallsBackToTheStateDirectory(t *testing.T) {
 		t.Errorf("socket = %q, want the state directory fallback", got)
 	}
 }
+
+func TestTheSoundCommandSwitchesOneCast(t *testing.T) {
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	socket := r.serve(t)
+	if start := r.ask(t, socket, Request{Cmd: CmdStart, DeviceID: "a", Mode: session.ModeMirror}); !start.Ok {
+		t.Fatalf("start failed: %s", start.Error)
+	}
+
+	resp := r.ask(t, socket, Request{Cmd: CmdSound, DeviceID: "a", Sound: "laptop"})
+	if !resp.Ok {
+		t.Fatalf("sound failed: %s", resp.Error)
+	}
+	if n := snd.count("set:a:laptop"); n != 1 {
+		t.Errorf("Set(a, laptop) called %d times, want once", n)
+	}
+
+	bad := r.ask(t, socket, Request{Cmd: CmdSound, DeviceID: "a", Sound: "kitchen"})
+	if bad.Ok {
+		t.Error("an unknown choice was accepted")
+	}
+	for _, want := range []string{"tv", "laptop", "both"} {
+		if !strings.Contains(bad.Error, want) {
+			t.Errorf("error %q does not name %q", bad.Error, want)
+		}
+	}
+
+	if unknown := r.ask(t, socket, Request{Cmd: CmdSound, DeviceID: "nope", Sound: "tv"}); unknown.Ok {
+		t.Error("an unknown receiver was accepted")
+	}
+}

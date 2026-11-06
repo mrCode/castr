@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/mrCode/castr/internal/discovery"
 	"github.com/mrCode/castr/internal/session"
+	"github.com/mrCode/castr/internal/sound"
 )
 
 // IdleTimeout is how long the daemon stays resident with nothing casting.
@@ -50,6 +52,11 @@ type Daemon struct {
 	Notify   Notifier
 	Clock    func() time.Time
 
+	// Sound routes each cast's sound; nil means no routing. SoundOn is the
+	// config's sound setting: with it off, Sound is never called.
+	Sound   Sound
+	SoundOn bool
+
 	// Graces are fields rather than constants so tests do not sleep for
 	// twelve seconds to prove a rule about twelve seconds.
 	ListGrace   time.Duration
@@ -59,6 +66,12 @@ type Daemon struct {
 	mu         sync.Mutex
 	sessions   map[string]*session.Session
 	lastActive time.Time
+	// soundSources holds, by device id, the source Sound.Attach gave each
+	// cast whose sound is routed. An entry is removed exactly once, by
+	// whoever ends the cast, and that removal is what earns the Detach.
+	soundSources map[string]string
+	// soundNotes says why a cast with sound on has no choice.
+	soundNotes map[string]string
 	stopping   chan struct{}
 	stopOnce   sync.Once
 }
@@ -74,6 +87,9 @@ func New(reg *Registry, backends map[string]Backend) *Daemon {
 		IdleTimeout: IdleTimeout,
 		sessions:    map[string]*session.Session{},
 		stopping:    make(chan struct{}),
+
+		soundSources: map[string]string{},
+		soundNotes:   map[string]string{},
 	}
 	d.lastActive = d.Clock()
 	return d
@@ -103,13 +119,18 @@ func (d *Daemon) OnState(device discovery.Device, state session.State, reason st
 		d.mu.Unlock()
 		return // an impossible transition is a bug upstream, not news for the user
 	}
-	if state == session.Failed || state == session.Idle {
+	ended := state == session.Failed || state == session.Idle
+	if ended {
 		delete(d.sessions, device.ID)
 	}
 	if s.IsActive() {
 		d.lastActive = d.now()
 	}
 	d.mu.Unlock()
+
+	if ended {
+		d.dropSound(device.ID)
+	}
 
 	if d.Notify != nil {
 		d.Notify(device, state, reason)
@@ -178,16 +199,32 @@ func (d *Daemon) Start(ctx context.Context, deviceID, mode string) error {
 	s := session.New(device, mode, d.now)
 	d.sessions[device.ID] = s
 	d.lastActive = d.now()
+	// A restart -- mirror to extend, say -- finds the receiver's sound
+	// already routed, and keeps it: the router would refuse a second Attach.
+	_, restart := d.soundSources[device.ID]
+	previousNote, hadNote := d.soundNotes[device.ID]
 	d.mu.Unlock()
+
+	// Before the backend, which asks AudioSource for the source to capture.
+	attached := false
+	if d.routesSound() && !restart {
+		attached = d.attachSound(device.ID)
+	}
 
 	err := backend.Start(ctx, device, mode)
 	if err == nil {
+		if restart {
+			// Every cast starts on TV, a restarted one too. A failure leaves
+			// the old choice, which status still reports truthfully.
+			_ = d.Sound.Set(device.ID, sound.TV)
+		}
 		return nil
 	}
 
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.sessions[device.ID] == s {
+	drop := true
+	switch current, ok := d.sessions[device.ID]; {
+	case ok && current == s:
 		delete(d.sessions, device.ID)
 
 		// The backend declined WITHOUT touching the device, so whatever it was
@@ -199,7 +236,25 @@ func (d *Daemon) Start(ctx context.Context, deviceID, mode string) error {
 		// cast that is gone.
 		if errors.Is(err, session.ErrRefused) && previous != nil {
 			d.sessions[device.ID] = previous
+			// The old cast's sound is still live too. Only routing this start
+			// made for it goes, and the old cast's note comes back.
+			drop = attached
 		}
+	case ok:
+		// A newer start owns the device now, and its sound with it.
+		drop = false
+	}
+	d.mu.Unlock()
+
+	if drop {
+		d.dropSound(device.ID)
+	}
+	if errors.Is(err, session.ErrRefused) && previous != nil && hadNote {
+		d.mu.Lock()
+		if d.sessions[device.ID] == previous {
+			d.soundNotes[device.ID] = previousNote
+		}
+		d.mu.Unlock()
 	}
 	return err
 }
@@ -235,10 +290,15 @@ func (d *Daemon) Stop(ctx context.Context, deviceID string) error {
 		// connecting, and every later stop repeats the same refusal. Observed
 		// on real hardware after a stop whose teardown failed.
 		d.mu.Lock()
+		stale := false
 		if current, ok := d.sessions[deviceID]; ok && current == s {
 			delete(d.sessions, deviceID)
+			stale = true
 		}
 		d.mu.Unlock()
+		if stale {
+			d.dropSound(deviceID)
+		}
 		return nil
 	}
 	return err
@@ -322,4 +382,157 @@ func (d *Daemon) WatchDiscovery(interval time.Duration) {
 			_ = d.Registry.Refresh()
 		}
 	}
+}
+
+// Sound is what the daemon needs from the sound router.
+type Sound interface {
+	Attach(id string) (string, error)
+	Set(id string, c sound.Choice) error
+	Choice(id string) (sound.Choice, bool)
+	Detach(id string) error
+	Follow() error
+	Restore() error
+}
+
+// The Sound calls below run pactl, so none is made holding d.mu: status
+// would wait on them.
+
+func (d *Daemon) routesSound() bool { return d.SoundOn && d.Sound != nil }
+
+// attachSound routes a new cast's sound and reports whether it did. When it
+// cannot, the cast goes ahead with its sound on the laptop and the TV, as
+// before castr routed sound, and the note says why.
+func (d *Daemon) attachSound(id string) bool {
+	source, err := d.Sound.Attach(id)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err != nil {
+		d.soundNotes[id] = "sound stays on the laptop and the TV: " + firstLine(err)
+		return false
+	}
+	d.soundSources[id] = source
+	delete(d.soundNotes, id)
+	return true
+}
+
+// dropSound ends a cast's sound routing. Every way a cast ends calls it, and
+// often more than one does, so only the first call that finds the cast
+// routed detaches it.
+func (d *Daemon) dropSound(id string) {
+	d.mu.Lock()
+	_, routed := d.soundSources[id]
+	delete(d.soundSources, id)
+	delete(d.soundNotes, id)
+	d.mu.Unlock()
+	if routed {
+		// Nothing to do about a failure here: the last detach restores the
+		// laptop, and what it could not undo the next Recover does.
+		_ = d.Sound.Detach(id)
+	}
+}
+
+// AudioSource is the source a cast's receiver captures, or "" to leave the
+// backend to its default: sound is off, or it could not be routed.
+func (d *Daemon) AudioSource(id string) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.soundSources[id]
+}
+
+// SetSound changes where one cast's sound plays.
+func (d *Daemon) SetSound(id string, c sound.Choice) error {
+	d.mu.Lock()
+	_, casting := d.sessions[id]
+	_, routed := d.soundSources[id]
+	note := d.soundNotes[id]
+	d.mu.Unlock()
+
+	switch {
+	case !casting:
+		return fmt.Errorf("%w: %s", ErrNotCasting, id)
+	case !d.routesSound():
+		return errors.New("sound is off in castr's config")
+	case !routed && note != "":
+		return fmt.Errorf("no sound choice for %s: %s", id, note)
+	case !routed:
+		return fmt.Errorf("no sound choice for %s", id)
+	}
+	return d.Sound.Set(id, c)
+}
+
+// soundOf is a cast's sound choice, or else the note saying why it has none.
+func (d *Daemon) soundOf(id string) (choice, note string) {
+	d.mu.Lock()
+	_, routed := d.soundSources[id]
+	note = d.soundNotes[id]
+	d.mu.Unlock()
+	if !routed {
+		return "", note
+	}
+	if c, ok := d.Sound.Choice(id); ok {
+		return string(c), ""
+	}
+	return "", note
+}
+
+// FollowSound keeps the routing right while the user changes outputs. It
+// does nothing while no cast's sound is routed.
+//
+// Only a lost routing changes what the casts report: the router has then
+// restored the laptop and forgotten every cast, which Choice shows, so each
+// cast it forgot loses its choice and gains a note. Any other failure leaves
+// the routing in place, and the next call retries.
+func (d *Daemon) FollowSound() {
+	if !d.routesSound() {
+		return
+	}
+	d.mu.Lock()
+	ids := make([]string, 0, len(d.soundSources))
+	for id := range d.soundSources {
+		ids = append(ids, id)
+	}
+	d.mu.Unlock()
+	if len(ids) == 0 {
+		return
+	}
+
+	err := d.Sound.Follow()
+	if err == nil {
+		return
+	}
+	var lost []string
+	for _, id := range ids {
+		if _, ok := d.Sound.Choice(id); !ok {
+			lost = append(lost, id)
+		}
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, id := range lost {
+		// Gone already means its cast ended meanwhile and detached it.
+		if _, ok := d.soundSources[id]; ok {
+			delete(d.soundSources, id)
+			d.soundNotes[id] = "sound is back on the laptop: " + firstLine(err)
+		}
+	}
+}
+
+// WatchSound calls FollowSound every tick until the daemon stops.
+func (d *Daemon) WatchSound(tick time.Duration) {
+	ticker := time.NewTicker(tick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.stopping:
+			return
+		case <-ticker.C:
+			d.FollowSound()
+		}
+	}
+}
+
+// firstLine keeps a note to one line: a joined error carries one per cause.
+func firstLine(err error) string {
+	msg, _, _ := strings.Cut(err.Error(), "\n")
+	return msg
 }

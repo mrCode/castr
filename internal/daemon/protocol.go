@@ -67,6 +67,7 @@ const (
 	CmdAdd    = "add"
 	CmdForget = "forget"
 	CmdQuit   = "quit"
+	CmdSound  = "sound"
 )
 
 // Request is one command. Clients send exactly one per connection, as a single
@@ -77,6 +78,8 @@ type Request struct {
 	Mode     string      `json:"mode,omitempty"`
 	Pin      string      `json:"pin,omitempty"`
 	Device   *DeviceJSON `json:"device,omitempty"`
+	// Sound is where a cast's sound plays: tv, laptop or both.
+	Sound string `json:"sound,omitempty"`
 }
 
 // Response is the daemon's answer.
@@ -107,6 +110,11 @@ type SessionJSON struct {
 	Mode     string `json:"mode"`
 	State    string `json:"state"`
 	Error    string `json:"error,omitempty"`
+	// Sound is the cast's sound choice, or empty when it has none: sound is
+	// off, or castr could not route it.
+	Sound string `json:"sound,omitempty"`
+	// SoundNote says, in one line, why a cast with sound on has no choice.
+	SoundNote string `json:"sound_note,omitempty"`
 }
 
 // OK builds a successful response around any payload.

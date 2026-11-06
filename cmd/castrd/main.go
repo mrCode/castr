@@ -104,6 +104,11 @@ func run(idleTimeout time.Duration, verbose bool) error {
 	if hypr.RestorePanelIfPending(hyprctl, stateDir) {
 		log.Print("restored the panel mode left behind by a previous daemon")
 	}
+	// Likewise the sound routing a dead daemon left -- whatever the config
+	// says now, since it may have been turned off since.
+	if err := sound.Recover(execRunner, stateDir); err != nil {
+		log.Printf("restoring the sound: %v", err)
+	}
 
 	cfg, err := config.Load(filepath.Join(configDir, "config.toml"))
 	if err != nil {
@@ -137,6 +142,14 @@ func run(idleTimeout time.Duration, verbose bool) error {
 		discovery.ProtocolChromecast: castBackend,
 	})
 	d.IdleTimeout = idleTimeout
+	router := sound.NewRouter(execRunner, stateDir)
+	router.StartGuard = func() error { return sound.StartGuard(stateDir) }
+	d.Sound = router
+	// [airplay] audio predates Chromecast sound; "sound off" means off for
+	// every receiver, and castr then leaves the laptop's sound alone.
+	d.SoundOn = cfg.AirPlay.Audio
+	backend.AudioSource = d.AudioSource
+	castBackend.AudioSource = d.AudioSource
 	d.Notify = func(device discovery.Device, state session.State, reason string) {
 		log.Printf("%s: %s %s", device.Name, state, reason)
 		notifier.OnState(device, state, reason)
@@ -149,6 +162,7 @@ func run(idleTimeout time.Duration, verbose bool) error {
 
 	go d.WatchDiscovery(daemon.BrowseInterval)
 	go d.WatchIdle(time.Second)
+	go d.WatchSound(time.Second)
 	go persistDevices(d, registry, stateDir)
 
 	socket := daemon.DefaultSocketPath()
@@ -170,6 +184,13 @@ func shutdown(d *daemon.Daemon, backend *airplay.Backend, registry *daemon.Regis
 	for _, s := range d.Sessions() {
 		if err := backend.Stop(ctx, s.Device); err != nil {
 			log.Printf("stopping %s: %v", s.Device.Name, err)
+		}
+	}
+	// After the casts, and for all of them: the loop above stops only the
+	// AirPlay ones, and a Chromecast's routing must not outlive the daemon.
+	if d.SoundOn && d.Sound != nil {
+		if err := d.Sound.Restore(); err != nil {
+			log.Printf("restoring the sound: %v", err)
 		}
 	}
 	// A last sweep, because a session that failed to stop cleanly still leaves

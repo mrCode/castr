@@ -190,6 +190,12 @@ func (c *Client) SubmitPin(deviceID, pin string) error {
 	return err
 }
 
+// SetSound chooses where one cast's sound plays: tv, laptop or both.
+func (c *Client) SetSound(deviceID, choice string) error {
+	_, err := c.Do(daemon.Request{Cmd: daemon.CmdSound, DeviceID: deviceID, Sound: choice})
+	return err
+}
+
 // Add registers a receiver by address.
 func (c *Client) Add(device daemon.DeviceJSON) error {
 	_, err := c.Do(daemon.Request{Cmd: daemon.CmdAdd, Device: &device})

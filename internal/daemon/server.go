@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mrCode/castr/internal/discovery"
+	"github.com/mrCode/castr/internal/sound"
 )
 
 // maxRequest bounds one request line. Anything larger is not a castr client.
@@ -123,9 +124,11 @@ func (d *Daemon) Handle(ctx context.Context, req Request) Response {
 		sessions := d.Sessions()
 		out := make([]SessionJSON, 0, len(sessions))
 		for _, s := range sessions {
+			choice, note := d.soundOf(s.Device.ID)
 			out = append(out, SessionJSON{
 				DeviceID: s.Device.ID, Name: s.Device.Name,
 				Mode: s.Mode, State: string(s.State), Error: s.Err,
+				Sound: choice, SoundNote: note,
 			})
 		}
 		return OK(map[string]any{"sessions": out})
@@ -147,6 +150,16 @@ func (d *Daemon) Handle(ctx context.Context, req Request) Response {
 			return Err(err.Error())
 		}
 		return OK(nil)
+
+	case CmdSound:
+		choice, err := sound.ParseChoice(req.Sound)
+		if err != nil {
+			return Err(err.Error())
+		}
+		if err := d.SetSound(req.DeviceID, choice); err != nil {
+			return Err(err.Error())
+		}
+		return OK(map[string]any{"device_id": req.DeviceID, "sound": string(choice)})
 
 	case CmdAdd:
 		if req.Device == nil {
