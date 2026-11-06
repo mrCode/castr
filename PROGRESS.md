@@ -73,27 +73,21 @@
 > the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
 > (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
 > gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
-> **2026-11-06 findings (home Apple TV 42:56:35:AF:76:0F, paired, verifies
-> without a code):** the cast runs live 30–100 s, then freezes. Same with 0.2.6.
-> Against the local test receiver at 1920x1080 it runs clean for 3+ minutes. The
-> TV asks for **1280x720**; the portal gives 2560x1600 BGRA @ 240 Hz and no
-> framerate cap is requested. With `GST_DEBUG=pipewiresrc:5`, about 11 s into
-> the TV run pipewiresrc's stream starts flapping streaming↔paused ~9×/s
-> (remove buffers, renegotiate, add 4 buffers): xdph `Out of buffers`, then
-> 0 B on the wire. The helper itself is fine (frame goroutine waiting on gst
-> stdout, TCP Send-Q 0). The gst threads all sit in futex_wait.
-> Ruled out: the 0.3.0 code, the Claude-app scope, the vapostproc shim path,
-> audio (`-no-audio` froze too), and the portal (froze with a fresh one).
-> Hypothesis: the 720p canvas, maybe with the uncapped 240 Hz source, sets off
-> the renegotiation loop.
-> NEXT: the 720p variant of the test receiver (patch the modern profile's
-> displayWidth/Height to 1280x720 in cmd/doubletake-test-receiver, build, then
-> `git checkout` to restore it) on 127.0.0.1:47000, and the castr-airplay
-> command with `GST_DEBUG="*:3,pipewiresrc:5"` and `-target-latency-ms 100
-> -no-audio`. If it flaps locally, iterate on a fix in the castr branch: request
-> a framerate cap or a fixed size from pipewiresrc, or scale before the caps
-> filter. Then go back to the TV for a run of more than 3 minutes. Then release
-> 0.3.0 + plugin 1.3.0 and update #11503.
+> **2026-11-06: the freeze is found and fixed** (doubletake `castr` branch
+> 4ab072a, unpushed). pipewiresrc provides the pipeline clock by default, and
+> that clock follows the PipeWire stream. When the portal pauses and
+> renegotiates the stream, which xdph does when it likes, that clock stops or
+> steps back. `compositor force-live` then waits on a time that never comes;
+> the source thread blocks behind it holding the portal's buffers; xdph, out
+> of buffers, renegotiates again (the `Out of buffers` storm). The fix is
+> `provide-clock=false` on pipewiresrc.
+> Evidence: in the frozen home-TV run the compositor's last log line is a
+> clock wait for 11.434 s at log time 11.977 s, after a pause at 11.90 s. It
+> never returned. With the fix, a run to the office TV (1080p) paused once at
+> 4.4 s, resumed in 6 ms, and ran 9 min 44 s at a steady ~140 KB/s (83.5 MB).
+> Size was not the trigger: a local 720p receiver ran 4 min clean even before
+> the fix. Not tested yet: a cast through castr itself, with audio, from the
+> packaged build.
 > **The portal wedges** after frozen or killed sessions. The share dialog then
 > never appears and the helper fails after 30 s with "select response: wait for
 > portal response: context deadline exceeded". Restarting
