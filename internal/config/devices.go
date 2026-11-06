@@ -205,11 +205,22 @@ func MergePairing(srcPath, dstPath string) ([]string, error) {
 		if !ok {
 			target = map[string]any{}
 		}
+		// The helper binds a receiver to an address on an existing pairing
+		// too, after a pair-verify succeeds, without making it any newer. So
+		// the same pairing can hold an address in one mode and none in the
+		// other, with nothing to tell which is newer -- and mode order alone
+		// would delete the address from the mode that learned it, at every
+		// start. For the same pairing, equally old, an address is only ever
+		// added or replaced, never removed. src already supersedes dst here;
+		// dst superseding src as well is what "equally old" means.
+		keepAddress := ok && samePairing(entry, target) && supersedes(target, entry, now)
 		changed := false
 		for _, field := range pairingFields {
 			value, present := entry[field]
 			existing, had := target[field]
 			switch {
+			case field == "receiver_address" && !present && keepAddress:
+				// dst's address stays.
 			// DeepEqual, not !=: a malformed file can hold arrays, and Go
 			// panics comparing two of them -- taking the daemon down with it.
 			case present && (!had || !reflect.DeepEqual(existing, value)):
@@ -264,6 +275,17 @@ func supersedes(src, dst map[string]any, now time.Time) bool {
 		return true
 	}
 	return !pairedAt(src, now).Before(pairedAt(dst, now))
+}
+
+// samePairing reports whether two entries hold one pairing: the same id and
+// keys, with the same receiver.
+func samePairing(a, b map[string]any) bool {
+	for _, field := range []string{"pairing_id", "ed25519_public", "receiver_ed25519_public"} {
+		if !reflect.DeepEqual(a[field], b[field]) {
+			return false
+		}
+	}
+	return true
 }
 
 // hasIdentity reports whether an entry holds the receiver's own key.

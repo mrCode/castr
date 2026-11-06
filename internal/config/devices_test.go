@@ -821,6 +821,128 @@ func TestWithEquallyOldIdentitiesModeOrderStillDecides(t *testing.T) {
 	bothHold("first", "first-key")(t, dir)
 }
 
+// --- an address learned after pairing ---
+//
+// castr-airplay binds a receiver to the address it verified at, and does so
+// on an existing pairing too, after a pair-verify succeeds -- without making
+// it any newer. The other mode's file holds the same pairing without the
+// address, and the two look equally old. Mode order alone would then delete
+// the address mirror never learned, from extend, at every castrd start.
+
+// boundPairing is the same pairing in each mode; address is left out when "".
+func boundPairing(pairingID, receiverKey, address, token string) string {
+	body := fmt.Sprintf(`"pairing_id":"%s","ed25519_public":"pub","ed25519_seed":"seed",`+
+		`"pairing_protocol":"hap","receiver_id":"tv-id","receiver_ed25519_public":"%s",`+
+		`"paired_at":"2026-10-01T10:00:00Z","pairing_code":"pin","restore_token":"%s"`,
+		pairingID, receiverKey, token)
+	if address != "" {
+		body += fmt.Sprintf(`,"receiver_address":"%s"`, address)
+	}
+	return `{"AA:BB:CC:DD:EE:FF":{` + body + `}}`
+}
+
+func addressIn(t *testing.T, dir, mode string) any {
+	t.Helper()
+	return readCredsMap(t, CredsPath(dir, mode))["AA:BB:CC:DD:EE:FF"]["receiver_address"]
+}
+
+func TestAnAddressLearnedAfterPairingIsNotWipedBySyncing(t *testing.T) {
+	for name, files := range map[string][2]string{
+		"learned in extend": {boundPairing("p", "tv-key", "", "token-for-mirror"),
+			boundPairing("p", "tv-key", "10.0.0.5", "token-for-extend")},
+		"learned in mirror": {boundPairing("p", "tv-key", "10.0.0.5", "token-for-mirror"),
+			boundPairing("p", "tv-key", "", "token-for-extend")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			syncBothWays(t, files[0], files[1], func(t *testing.T, dir string) {
+				for _, mode := range []string{"mirror", "extend"} {
+					if got := addressIn(t, dir, mode); got != "10.0.0.5" {
+						t.Errorf("%s holds receiver_address %v, want 10.0.0.5", mode, got)
+					}
+				}
+			})
+		})
+	}
+}
+
+// Two addresses for one pairing: mode order picks, as for any other field.
+// The helper copes with a stale one by its own rules.
+func TestOfTwoAddressesForOnePairingModeOrderDecides(t *testing.T) {
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), boundPairing("p", "tv-key", "10.0.0.5", "token-for-mirror"))
+	putCreds(t, CredsPath(dir, "extend"), boundPairing("p", "tv-key", "10.0.0.9", "token-for-extend"))
+
+	if err := SyncPairing(dir, []string{"mirror", "extend"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"mirror", "extend"} {
+		if got := addressIn(t, dir, mode); got != "10.0.0.5" {
+			t.Errorf("%s holds receiver_address %v, want mirror's 10.0.0.5", mode, got)
+		}
+	}
+}
+
+// Only the SAME pairing keeps an address it alone learned. A different
+// pairing that wins still replaces the whole unit: an address beside keys it
+// was never verified with would bind the receiver on another pairing's word.
+func TestAnAddressIsNotKeptBesideAnotherPairing(t *testing.T) {
+	for name, mirror := range map[string]string{
+		"another pairing id": boundPairing("q", "tv-key", "", "token-for-mirror"),
+		"another receiver":   boundPairing("p", "other-key", "", "token-for-mirror"),
+		"other keys": strings.Replace(boundPairing("p", "tv-key", "", "token-for-mirror"),
+			`"ed25519_public":"pub"`, `"ed25519_public":"other-pub"`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			putCreds(t, CredsPath(dir, "mirror"), mirror)
+			putCreds(t, CredsPath(dir, "extend"), boundPairing("p", "tv-key", "10.0.0.5", "token-for-extend"))
+
+			if _, err := MergePairing(CredsPath(dir, "mirror"), CredsPath(dir, "extend")); err != nil {
+				t.Fatal(err)
+			}
+			if got := addressIn(t, dir, "extend"); got != nil {
+				t.Errorf("extend kept receiver_address %v beside mirror's pairing", got)
+			}
+		})
+	}
+}
+
+// Only the address is kept so. The rest of the same pairing still copies as
+// it always has: a field the winner lacks is removed.
+func TestOnlyTheAddressOfTheSamePairingIsKept(t *testing.T) {
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), strings.Replace(boundPairing("p", "tv-key", "", "token-for-mirror"),
+		`,"pairing_code":"pin"`, "", 1))
+	putCreds(t, CredsPath(dir, "extend"), boundPairing("p", "tv-key", "10.0.0.5", "token-for-extend"))
+
+	if _, err := MergePairing(CredsPath(dir, "mirror"), CredsPath(dir, "extend")); err != nil {
+		t.Fatal(err)
+	}
+	entry := readCredsMap(t, CredsPath(dir, "extend"))["AA:BB:CC:DD:EE:FF"]
+	if code, kept := entry["pairing_code"]; kept {
+		t.Errorf("extend kept pairing_code %v that mirror's pairing lacks", code)
+	}
+	if entry["receiver_address"] != "10.0.0.5" {
+		t.Errorf("extend holds receiver_address %v, want its own 10.0.0.5 kept", entry["receiver_address"])
+	}
+}
+
+// Nor does a pairing that is simply newer keep the address of the one it
+// replaces: the winner's pairing is copied whole.
+func TestANewerPairingDoesNotKeepTheOldAddress(t *testing.T) {
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), strings.Replace(boundPairing("p", "tv-key", "", "token-for-mirror"),
+		"2026-10-01T10:00:00Z", "2026-10-02T10:00:00Z", 1))
+	putCreds(t, CredsPath(dir, "extend"), boundPairing("p", "tv-key", "10.0.0.5", "token-for-extend"))
+
+	if _, err := MergePairing(CredsPath(dir, "mirror"), CredsPath(dir, "extend")); err != nil {
+		t.Fatal(err)
+	}
+	if got := addressIn(t, dir, "extend"); got != nil {
+		t.Errorf("extend kept receiver_address %v beside a newer pairing", got)
+	}
+}
+
 // Migration merges too, at every start: omarchy-cast's pairings predate
 // receiver identities, and must not wipe one castr's helper has recorded.
 func TestALegacyPairingNeverWipesAnIdentity(t *testing.T) {
