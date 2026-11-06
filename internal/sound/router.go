@@ -21,6 +21,11 @@ type Router struct {
 	run      Runner
 	stateDir string
 
+	// StartGuard, when set, starts the process that restores the sound if
+	// the daemon dies. It runs once each time the state file is first
+	// written, i.e. once per routing lifetime.
+	StartGuard func() error
+
 	casts      map[string]*cast
 	lastN      int // never reused within a process
 	mixModule  modRef
@@ -91,6 +96,11 @@ func (r *Router) takeOver() error {
 		return err
 	}
 	r.previous, r.laptop = def, def
+	if r.StartGuard != nil {
+		if err := r.StartGuard(); err != nil {
+			return err
+		}
+	}
 
 	ref, err := loadNullSink(r.run, mixSink, mixDescription)
 	if err != nil {

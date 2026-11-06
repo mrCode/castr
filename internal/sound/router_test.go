@@ -1084,3 +1084,23 @@ func TestEachAttachGetsAFreshCastSink(t *testing.T) {
 		t.Error("attaching the same cast twice succeeded")
 	}
 }
+
+func TestTheRouterStartsTheGuardOnceOnFirstAttach(t *testing.T) {
+	f := newFakePulse()
+	r := NewRouter(f.run, t.TempDir())
+	starts := 0
+	r.StartGuard = func() error { starts++; return nil }
+
+	mustAttach(t, r, "a")
+	mustAttach(t, r, "b")
+	if starts != 1 {
+		t.Fatalf("guard started %d times across two attaches, want 1", starts)
+	}
+	if err := r.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	mustAttach(t, r, "c")
+	if starts != 2 {
+		t.Fatalf("guard started %d times after a restore and a new attach, want 2", starts)
+	}
+}

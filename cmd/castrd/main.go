@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -37,12 +38,19 @@ import (
 	"github.com/mrCode/castr/internal/hypr"
 	"github.com/mrCode/castr/internal/notify"
 	"github.com/mrCode/castr/internal/session"
+	"github.com/mrCode/castr/internal/sound"
 )
 
 // version is set at build time with -X main.version.
 var version = "dev"
 
 func main() {
+	// The sound guard is castrd started again to restore the laptop's sound
+	// if the daemon dies. It takes no lock and reads no config.
+	if len(os.Args) > 1 && os.Args[1] == sound.GuardFlag {
+		os.Exit(runSoundGuard(os.Args[2:]))
+	}
+
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	idleTimeout := flag.Duration("idle-timeout", daemon.IdleTimeout,
 		"exit after this long with nothing casting")
@@ -346,4 +354,32 @@ func credsPath(stateDir, mode string) (string, error) {
 		return "", fmt.Errorf("creating %s: %w", dir, err)
 	}
 	return config.CredsPath(stateDir, mode), nil
+}
+
+// runSoundGuard runs `castrd --sound-guard <pid> <stateDir>` and returns the
+// exit code: 2 for bad arguments.
+func runSoundGuard(args []string) int {
+	usage := func() int {
+		fmt.Fprintln(os.Stderr, "usage: castrd --sound-guard <pid> <state-dir>")
+		return 2
+	}
+	if len(args) != 2 || args[1] == "" {
+		return usage()
+	}
+	pid, err := strconv.Atoi(args[0])
+	if err != nil || pid <= 0 {
+		return usage()
+	}
+	stateDir := args[1]
+	sound.Guard(context.Background(), pid, stateDir,
+		func(pid int) bool { return syscall.Kill(pid, 0) == nil },
+		func() error { return sound.Recover(execRunner, stateDir) },
+		500*time.Millisecond)
+	return 0
+}
+
+// execRunner runs a command and returns its standard output.
+func execRunner(name string, args ...string) (string, error) {
+	out, err := exec.Command(name, args...).Output()
+	return string(out), err
 }
