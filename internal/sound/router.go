@@ -307,10 +307,13 @@ func (r *Router) follow(sinks []sink) error {
 	_, defPresent := sinkID(sinks, def)
 	switch {
 	case isCastrName(def) && def != mixSink:
-		// One of castr's cast outputs is not a laptop output.
+		// One of castr's cast outputs is not a laptop output. The app
+		// streams that followed the default there come back too; the cast's
+		// own loopback, a module's stream, stays.
 		if err := setDefaultSink(r.run, mixSink); err != nil {
 			return err
 		}
+		r.sweep = def
 	case def != mixSink && def != "" && defPresent:
 		if err := r.adoptLaptop(def); err != nil {
 			return err

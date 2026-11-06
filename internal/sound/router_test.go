@@ -1300,3 +1300,26 @@ func TestACorruptStateFileIsReported(t *testing.T) {
 	}
 	stateGone(t, dir) // nothing in it to retry with; the restore itself worked
 }
+
+func TestFollowTakesBackAppsFromACastOutputMadeTheDefault(t *testing.T) {
+	// The output pickers list "castr cast" during a cast. Picked, it is not
+	// a laptop output: the default goes back to castr_mix, and so do the app
+	// streams that followed the default there.
+	f := newFakePulse()
+	r := NewRouter(f.run, t.TempDir())
+	mustAttach(t, r, "airplay:A")
+	f.def = "castr_cast_1"
+	f.addApp("castr_cast_1")
+
+	if err := r.Follow(); err != nil {
+		t.Fatal(err)
+	}
+	if f.def != "castr_mix" {
+		t.Errorf("default is %s, want castr_mix", f.def)
+	}
+	f.allAppsOn(t, "castr_mix")
+	if !f.hasLoopback("castr_mix.monitor", "castr_cast_1") {
+		t.Error("A's receiver lost its sound")
+	}
+	f.checkNoFeedback(t)
+}
