@@ -887,3 +887,30 @@ func TestStartingACastDialsTheReceiversOwnPort(t *testing.T) {
 		t.Errorf("doubletake was started without the receiver's port:\n%s", got)
 	}
 }
+
+// The hook's answer has to reach the spawned command: the backend is what
+// knows which receiver a cast is for.
+func TestStartingACastCapturesItsOwnSound(t *testing.T) {
+	h := newHarness(t, readyOutput)
+	var asked string
+	h.backend.AudioSource = func(deviceID string) string {
+		asked = deviceID
+		return "castr_cast_1.monitor"
+	}
+
+	if err := h.backend.Start(context.Background(), device("tv", "TV"), session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if asked != "tv" {
+		t.Errorf("the source was asked for %q, want the cast's device", asked)
+	}
+	if len(h.argvs) == 0 {
+		t.Fatal("doubletake was never started")
+	}
+	if got := strings.Join(h.argvs[0], " "); !strings.Contains(got, "-audio-source castr_cast_1.monitor") {
+		t.Errorf("doubletake was started without the cast's sound:\n%s", got)
+	}
+}

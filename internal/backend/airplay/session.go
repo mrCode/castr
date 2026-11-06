@@ -47,6 +47,9 @@ type Backend struct {
 	Creds        CredsFor
 	Emit         Emit
 	ReadyTimeout time.Duration
+	// AudioSource names the source carrying a cast's sound, by receiver.
+	// Nil, or an empty answer, leaves the helper to its default.
+	AudioSource func(deviceID string) string
 
 	mu       sync.Mutex
 	sessions map[string]*castSession
@@ -132,7 +135,8 @@ func (b *Backend) Start(ctx context.Context, device discovery.Device, mode strin
 		return err
 	}
 
-	proc, err := b.Spawn(ctx, BuildArgv(b.Config, device.ID, device.Address, device.Port, credsPath))
+	proc, err := b.Spawn(ctx, BuildArgv(b.Config, device.ID, device.Address, device.Port, credsPath,
+		b.audioSource(device.ID)))
 	if err != nil {
 		b.undo(cs)
 		msg := fmt.Sprintf("%s failed to start: %v", Binary, err)
@@ -507,4 +511,12 @@ func (b *Backend) emit(device discovery.Device, state session.State, reason stri
 	if b.Emit != nil {
 		b.Emit(device, state, reason)
 	}
+}
+
+// audioSource is the hook's answer for a receiver, or "" without a hook.
+func (b *Backend) audioSource(deviceID string) string {
+	if b.AudioSource == nil {
+		return ""
+	}
+	return b.AudioSource(deviceID)
 }

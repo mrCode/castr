@@ -102,7 +102,12 @@ var hwaccel = map[string]string{
 // address names itself differently, and such a device is refused. Without it,
 // an impersonator could name itself as a receiver never seen before and be
 // paired with from scratch.
-func BuildArgv(cfg Config, deviceID, address string, port int, credsPath string) []string {
+//
+// audioSource is the PulseAudio source carrying this cast's sound, the
+// monitor of the output castr routed the cast to. Empty leaves the helper to
+// capture the default output's monitor, as it always has. It is ignored when
+// audio is off.
+func BuildArgv(cfg Config, deviceID, address string, port int, credsPath, audioSource string) []string {
 	accel, ok := hwaccel[cfg.Encoder]
 	if !ok {
 		accel = "auto"
@@ -127,6 +132,8 @@ func BuildArgv(cfg Config, deviceID, address string, port int, credsPath string)
 	}
 	if !cfg.Audio {
 		argv = append(argv, "-no-audio")
+	} else if audioSource != "" {
+		argv = append(argv, "-audio-source", audioSource)
 	}
 
 	// AirPlay PAIRING credentials -- the keys handed over after the user types

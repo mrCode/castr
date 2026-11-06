@@ -293,6 +293,9 @@ func newChromecastBackend(cfg config.Config) *chromecast.Backend {
 		Height:         cfg.Chromecast.Height,
 		Port:           cfg.Chromecast.Port,
 		SegmentSeconds: cfg.Chromecast.SegmentSeconds,
+		// [airplay] audio predates Chromecast sound; "sound off" means off
+		// for every receiver.
+		Audio: cfg.AirPlay.Audio,
 	}, nil)
 }
 

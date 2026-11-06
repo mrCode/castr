@@ -76,6 +76,9 @@ type Config struct {
 	Width, Height  int
 	Port           int
 	SegmentSeconds int
+	// Audio carries the cast's sound to the receiver. Off, the receiver gets
+	// the silent track it needs to play at all.
+	Audio bool
 	// StartTimeout bounds the whole start, including the time the user spends
 	// choosing a screen at the share prompt.
 	StartTimeout time.Duration
@@ -100,6 +103,9 @@ type Backend struct {
 	LocalAddress func(host string) (string, error)
 	TempDir      func() (string, error)
 	Emit         Emit
+	// AudioSource names the source carrying a cast's sound, by receiver.
+	// Nil, or an empty answer, means the receiver gets silence.
+	AudioSource func(deviceID string) string
 
 	mu       sync.Mutex
 	sessions map[string]*castSession
@@ -307,6 +313,7 @@ func (b *Backend) start(ctx context.Context, cs *castSession, mode string) error
 		Width: b.Config.Width, Height: b.Config.Height,
 		Container: capture.HLS, Dir: dir,
 		SegmentSeconds: b.Config.SegmentSeconds,
+		Audio:          b.Config.Audio, AudioSource: b.audioSource(cs.device.ID),
 	}
 	pipeline, err := b.StartCapture(opts)
 	if err != nil {
@@ -488,4 +495,12 @@ func countSegments(path string) (int, error) {
 		}
 	}
 	return count, nil
+}
+
+// audioSource is the hook's answer for a receiver, or "" without a hook.
+func (b *Backend) audioSource(deviceID string) string {
+	if b.AudioSource == nil {
+		return ""
+	}
+	return b.AudioSource(deviceID)
 }

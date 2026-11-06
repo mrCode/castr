@@ -62,6 +62,12 @@ type Options struct {
 	// latency: a receiver waits for a segment or two before it starts, so this
 	// is the difference between a two-second delay and a ten-second one.
 	SegmentSeconds int
+
+	// Audio carries sound to the receiver, from AudioSource: the PulseAudio
+	// source with this cast's sound. Without both, an HLS stream gets a silent
+	// track instead.
+	Audio       bool
+	AudioSource string
 }
 
 // PlaylistName is the HLS playlist a receiver is pointed at.
@@ -143,15 +149,8 @@ func (o Options) Args() []string {
 		// Every segment must open with a keyframe or a receiver joining
 		// mid-stream shows nothing until the next one.
 		args = append(args, "!", "h264parse", "config-interval=-1", "!", "hls.video")
-		// A silent audio track, because the receiver will not play without one.
-		//
-		// A video-only HLS stream is fetched -- playlist, then segments -- and
-		// then refused with LOAD_FAILED and idleReason ERROR. The receiver
-		// downloads the video before rejecting it, so the failure looks like a
-		// decoding problem with the picture. Adding silence fixed it; nothing
-		// about the video changed.
+		args = append(args, o.audioSource()...)
 		args = append(args,
-			"audiotestsrc", "wave=silence", "is-live=true",
 			"!", "audioconvert", "!", "audioresample",
 			"!", "audio/x-raw,rate=44100,channels=2",
 			"!", "avenc_aac", "!", "aacparse", "!", "hls.audio")
@@ -172,6 +171,28 @@ func (o Options) Args() []string {
 	}
 
 	return append(args, "!", "fdsink", "fd=1", "sync=false")
+}
+
+// audioSource is where an HLS stream's sound comes from.
+//
+// There is always an audio track, because the receiver will not play without
+// one. A video-only HLS stream is fetched -- playlist, then segments -- and
+// then refused with LOAD_FAILED and idleReason ERROR. The receiver downloads
+// the video before rejecting it, so the failure looks like a decoding problem
+// with the picture. Adding silence fixed it; nothing about the video changed.
+// So with no sound to carry, the track is silence.
+//
+// The cast's sound is captured with provide-clock=false, so the pipeline never
+// runs on a clock that follows the sound. A source's clock stops when its
+// stream pauses, and a pipeline waiting on it waits forever: that is how the
+// AirPlay helper's capture froze, on pipewiresrc's clock, until it stopped
+// taking its clock from a source (found and fixed 2026-11-06).
+func (o Options) audioSource() []string {
+	if o.Audio && o.AudioSource != "" {
+		return []string{"pulsesrc", "device=" + o.AudioSource,
+			"do-timestamp=true", "provide-clock=false"}
+	}
+	return []string{"audiotestsrc", "wave=silence", "is-live=true"}
 }
 
 // scaleCaps adds the output size, keeping the aspect ratio square so a 16:10

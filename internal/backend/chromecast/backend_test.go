@@ -555,3 +555,31 @@ func TestACastThatChangesToACameraIsTornDownWhileRunning(t *testing.T) {
 	}
 	t.Fatal("a cast that switched to the webcam kept running")
 }
+
+// The cast's own source, and the sound setting, have to reach the capture:
+// the backend is what knows which receiver a cast is for.
+func TestACastCapturesItsOwnSound(t *testing.T) {
+	h := newHarness(t, []capture.Node{screen})
+	h.backend.Config.Audio = true
+	var asked string
+	h.backend.AudioSource = func(deviceID string) string {
+		asked = deviceID
+		return "castr_cast_2.monitor"
+	}
+	var got capture.Options
+	h.backend.StartCapture = func(opts capture.Options) (Pipeline, error) {
+		got = opts
+		return h.pipeline, nil
+	}
+
+	if err := h.backend.Start(context.Background(), tv, "mirror"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if asked != tv.ID {
+		t.Errorf("the source was asked for %q, want %q", asked, tv.ID)
+	}
+	if !got.Audio || got.AudioSource != "castr_cast_2.monitor" {
+		t.Errorf("capture got Audio=%v AudioSource=%q, want the cast's sound",
+			got.Audio, got.AudioSource)
+	}
+}
