@@ -57,8 +57,8 @@ install="${pkgname}.install"
 
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz"
         "${_airplay}.tar.gz::https://github.com/mrCode/doubletake/archive/refs/tags/${_airplay}.tar.gz")
-sha256sums=('SKIP-CASTR'
-            'SKIP-AIRPLAY')
+sha256sums=('00fb40ff544f5ee1a5647e723223b1a4d654bd2d46747d0aee592f0425b454d8'
+            '7452cd9a3c8c6feac063b6d60977ea5d8448a75aeb62b54a6d40eaed9753d8db')
 
 build() {
   cd "${srcdir}/${pkgname}-${pkgver}"
