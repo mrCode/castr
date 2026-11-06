@@ -122,6 +122,13 @@ func (o Options) Args() []string {
 		"fd=3",
 		"target-object="+strconv.FormatUint(uint64(o.Serial), 10),
 		"do-timestamp=true",
+		// The pipeline runs on the system clock, never the screen's.
+		// pipewiresrc's clock follows the PipeWire stream, which stops or
+		// steps back whenever the portal pauses and renegotiates it, and a
+		// pipeline waiting on that clock waits forever: the capture freeze
+		// found in the AirPlay helper on 2026-11-06. With the cast's sound
+		// as a second live source, neither may drive the clock.
+		"provide-clock=false",
 		"!", "videoconvert",
 		"!", "videoscale",
 		"!", "videorate",
@@ -183,10 +190,9 @@ func (o Options) Args() []string {
 // So with no sound to carry, the track is silence.
 //
 // The cast's sound is captured with provide-clock=false, so the pipeline never
-// runs on a clock that follows the sound. A source's clock stops when its
-// stream pauses, and a pipeline waiting on it waits forever: that is how the
-// AirPlay helper's capture froze, on pipewiresrc's clock, until it stopped
-// taking its clock from a source (found and fixed 2026-11-06).
+// runs on a clock that follows the sound, just as it never runs on the
+// screen's (see pipewiresrc in Args). A source's clock stops when its stream
+// pauses, and a pipeline waiting on it waits forever.
 func (o Options) audioSource() []string {
 	if o.Audio && o.AudioSource != "" {
 		return []string{"pulsesrc", "device=" + o.AudioSource,

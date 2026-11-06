@@ -61,3 +61,39 @@ func TestAChromecastWithoutSoundKeepsItsSilentTrack(t *testing.T) {
 		}
 	}
 }
+
+// element returns the properties given to the first element named name, up to
+// the next link.
+func element(args []string, name string) []string {
+	for i, arg := range args {
+		if arg != name {
+			continue
+		}
+		end := i + 1
+		for end < len(args) && args[end] != "!" {
+			end++
+		}
+		return args[i+1 : end]
+	}
+	return nil
+}
+
+// The screen's clock follows the PipeWire stream, and that stream stops or
+// steps back whenever the portal pauses and renegotiates it. A pipeline
+// running on it waits on a time that never comes: the capture freeze of
+// 2026-11-06. With sound or without, the pipeline runs on the system clock.
+func TestTheChromecastPipelineRunsOnTheSystemClock(t *testing.T) {
+	withSound := hlsOptions()
+	withSound.Audio = true
+	withSound.AudioSource = "castr_cast_2.monitor"
+
+	for name, opts := range map[string]Options{"with sound": withSound, "silent": hlsOptions()} {
+		props := element(opts.Args(), "pipewiresrc")
+		if props == nil {
+			t.Fatalf("%s: no pipewiresrc in %q", name, opts.Args())
+		}
+		if !strings.Contains(strings.Join(props, " "), "provide-clock=false") {
+			t.Errorf("%s: pipewiresrc %q, want provide-clock=false", name, props)
+		}
+	}
+}
