@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"time"
 
 	"github.com/mrCode/castr/internal/discovery"
 )
@@ -174,7 +175,8 @@ var identityFields = pairingFields[:3]
 // modes' pairings with a receiver is the newer.
 
 // MergePairing copies pairing keys from src into dst without touching either
-// file's portal tokens, and returns the receivers it added.
+// file's portal tokens, and returns the receivers it added. A receiver dst
+// already knows keeps dst's pairing unless src's supersedes it.
 func MergePairing(srcPath, dstPath string) ([]string, error) {
 	src, err := readCreds(srcPath)
 	if err != nil || len(src) == 0 {
@@ -196,6 +198,9 @@ func MergePairing(srcPath, dstPath string) ([]string, error) {
 			continue
 		}
 		target, ok := dst[receiver]
+		if ok && !supersedes(entry, target) {
+			continue
+		}
 		if !ok {
 			target = map[string]any{}
 		}
@@ -228,6 +233,49 @@ func MergePairing(srcPath, dstPath string) ([]string, error) {
 		return nil, nil
 	}
 	return added, writeCreds(dstPath, dst)
+}
+
+// supersedes reports whether src's pairing may replace dst's, for one receiver
+// both files know.
+//
+// The files are synced in mode order at every castrd start, so copying blindly
+// let an old mirror pairing -- made before the helper recorded receiver
+// identities -- wipe the identity and the new keys extend saved when it paired
+// again, at every start. For a receiver paired with no code that resets the
+// identity the helper trusts on first use, which is exactly the window an
+// impersonator needs; for an Apple TV it means typing a code again.
+//
+// So a pairing that holds the receiver's identity always beats one that does
+// not, whatever time either claims; of two that both hold one, the later
+// paired_at wins, a missing or unreadable one counting as oldest. Only when
+// nothing tells them apart does mode order decide, as it always has: src wins.
+// Asked both ways, as SyncPairing does, the winner is the same either way.
+func supersedes(src, dst map[string]any) bool {
+	srcKnown, dstKnown := hasIdentity(src), hasIdentity(dst)
+	if srcKnown != dstKnown {
+		return srcKnown
+	}
+	if !srcKnown {
+		return true
+	}
+	return !pairedAt(src).Before(pairedAt(dst))
+}
+
+// hasIdentity reports whether an entry holds the receiver's own key.
+func hasIdentity(entry map[string]any) bool {
+	key, ok := entry["receiver_ed25519_public"].(string)
+	return ok && key != ""
+}
+
+// pairedAt is when an entry was paired; the zero time, oldest of all, when it
+// does not say or says something unreadable.
+func pairedAt(entry map[string]any) time.Time {
+	text, _ := entry["paired_at"].(string)
+	at, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil {
+		return time.Time{}
+	}
+	return at
 }
 
 // ClearRestoreTokens drops the screen-share grants while keeping every
@@ -269,6 +317,10 @@ func ClearRestoreTokens(stateDir string, modes []string) ([]string, error) {
 
 // SyncPairing makes every mode's file know every receiver castr has paired
 // with, so a receiver is only ever paired once however many modes are used.
+// Every pair of modes is merged both ways, and the winning pairing for each
+// receiver is the same either way (see supersedes), so the result does not
+// depend on which mode comes first -- except where nothing tells the two
+// pairings apart.
 func SyncPairing(stateDir string, modes []string) error {
 	for _, from := range modes {
 		for _, to := range modes {
