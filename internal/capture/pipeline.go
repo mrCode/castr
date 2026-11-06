@@ -6,7 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"syscall"
+
+	"github.com/mrCode/castr/internal/proc"
 )
 
 // Container is how the encoded video is wrapped for the receiver.
@@ -267,7 +268,9 @@ func webmEncoderArgs(element string, bitrate int) []string {
 // and its own process group.
 //
 // The group matters: gst-launch spawns helpers, and signalling only the parent
-// leaves them holding the portal session and the encoder.
+// leaves them holding the portal session and the encoder. Pdeathsig ends it
+// when castrd is killed outright; start it with proc.Start, which keeps the
+// thread Pdeathsig watches alive for as long as the pipeline runs.
 func (o Options) Command(name string) (*exec.Cmd, error) {
 	if o.FD == nil {
 		return nil, fmt.Errorf("capture: no portal descriptor")
@@ -280,7 +283,7 @@ func (o Options) Command(name string) (*exec.Cmd, error) {
 	// ExtraFiles[0] is descriptor 3 in the child. This is the whole reason the
 	// child can use the portal's PipeWire remote at all.
 	cmd.ExtraFiles = []*os.File{o.FD}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = proc.Attr()
 	return cmd, nil
 }
 

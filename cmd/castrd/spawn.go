@@ -12,6 +12,7 @@ import (
 
 	"github.com/mrCode/castr/internal/backend/airplay"
 	"github.com/mrCode/castr/internal/config"
+	"github.com/mrCode/castr/internal/proc"
 )
 
 // termGrace is how long a child gets to exit after SIGTERM before SIGKILL.
@@ -84,8 +85,10 @@ func spawner(cfg config.Config, stateDir string) airplay.Spawner {
 		cmd := exec.Command(argv[0], argv[1:]...)
 
 		// Setpgid is load-bearing, not hygiene: without it Terminate's negative
-		// pid signals OUR OWN process group -- the daemon included.
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		// pid signals OUR OWN process group -- the daemon included. Pdeathsig
+		// ends the helper when castrd is killed outright, rather than leave
+		// it casting the picture with no sound and nothing to stop it.
+		cmd.SysProcAttr = proc.Attr()
 		cmd.Env = childEnv(cfg, stateDir)
 
 		// Plain os.Pipe rather than cmd.StdoutPipe: os/exec closes the pipes it
@@ -111,7 +114,8 @@ func spawner(cfg config.Config, stateDir string) airplay.Spawner {
 		}
 		cmd.Stdin = inR
 
-		if err := cmd.Start(); err != nil {
+		exited, err := proc.Start(cmd)
+		if err != nil {
 			outR.Close()
 			outW.Close()
 			inR.Close()
@@ -125,7 +129,7 @@ func spawner(cfg config.Config, stateDir string) airplay.Spawner {
 
 		c := &child{cmd: cmd, output: outR, input: inW, done: make(chan struct{})}
 		go func() {
-			_ = cmd.Wait()
+			<-exited
 			close(c.done)
 
 			// A capture pipeline that survived its parent would hold the write

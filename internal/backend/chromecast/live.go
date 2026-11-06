@@ -12,6 +12,7 @@ import (
 	"github.com/mrCode/castr/internal/capture"
 	"github.com/mrCode/castr/internal/cast"
 	"github.com/mrCode/castr/internal/portal"
+	"github.com/mrCode/castr/internal/proc"
 	"github.com/mrCode/castr/internal/stream"
 )
 
@@ -103,13 +104,15 @@ func startCapture(opts capture.Options) (Pipeline, error) {
 	// child that blocks forever on a full buffer.
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	if err := cmd.Start(); err != nil {
+	// Tied to castrd: killed outright, it takes the pipeline with it.
+	exited, err := proc.Start(cmd)
+	if err != nil {
 		return nil, fmt.Errorf("starting gst-launch-1.0: %w", err)
 	}
 
 	p := &process{cmd: cmd, done: make(chan struct{})}
 	go func() {
-		p.err = cmd.Wait()
+		p.err = <-exited
 		close(p.done)
 	}()
 	return p, nil

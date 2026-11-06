@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -12,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mrCode/castr/internal/config"
+	"github.com/mrCode/castr/internal/sound"
 )
 
 // alive reports whether a pid is still running. Signal 0 checks without sending.
@@ -270,4 +274,68 @@ func runShim(path string, element string) error {
 		return fmt.Errorf("exit %d", c.cmd.ProcessState.ExitCode())
 	}
 	return nil
+}
+
+func TestTheHelperDiesWithCastrd(t *testing.T) {
+	// castrd killed with SIGKILL stops nothing: the AirPlay helper went on
+	// casting the picture, its sound gone. The kernel must tell it.
+	if os.Getenv("CASTR_SPAWN_HELPER") != "" {
+		proc, err := spawner(config.Default(), os.Getenv("CASTR_SPAWN_HELPER"))(context.Background(), []string{"sleep", "30"})
+		if err != nil {
+			os.Exit(3)
+		}
+		os.Stdout.WriteString(strconv.Itoa(proc.(*child).cmd.Process.Pid) + "\n")
+		select {} // until killed
+	}
+	pid := killParentOf(t, "^TestTheHelperDiesWithCastrd$", "CASTR_SPAWN_HELPER="+t.TempDir())
+	if !waitDead(pid, 2*time.Second) {
+		t.Errorf("the helper %d still runs 2s after castrd was killed", pid)
+	}
+}
+
+// killParentOf runs this test binary as a stand-in castrd that starts a
+// child, prints its pid and waits; kills the stand-in with SIGKILL; and
+// returns the child's pid. The child's group is killed when the test ends.
+func killParentOf(t *testing.T, test, env string) int {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("Pdeathsig is Linux's")
+	}
+	parent := exec.Command(os.Args[0], "-test.run="+test)
+	parent.Env = append(os.Environ(), env)
+	out, err := parent.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(out).ReadString('\n')
+	if err != nil {
+		_ = parent.Process.Kill()
+		t.Fatalf("the stand-in castrd printed no pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+	if err := parent.Process.Signal(syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	_ = parent.Wait()
+	return pid
+}
+
+// waitDead waits for pid to exit; a zombie, waiting for its new parent to
+// reap it, has.
+func waitDead(pid int, limit time.Duration) bool {
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		if !sound.ProcessAlive(pid) {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return !sound.ProcessAlive(pid)
 }

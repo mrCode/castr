@@ -1,7 +1,9 @@
 package capture
 
 import (
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -95,5 +97,19 @@ func TestTheChromecastPipelineRunsOnTheSystemClock(t *testing.T) {
 		if !strings.Contains(strings.Join(props, " "), "provide-clock=false") {
 			t.Errorf("%s: pipewiresrc %q, want provide-clock=false", name, props)
 		}
+	}
+}
+
+func TestThePipelineDiesWithCastrd(t *testing.T) {
+	// castrd killed with SIGKILL runs no cleanup; the kernel sends the
+	// pipeline SIGTERM instead. The group stays, so a stop still ends it all.
+	opts := hlsOptions()
+	opts.FD = os.Stdin
+	cmd, err := opts.Command("gst-launch-1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := cmd.SysProcAttr; a == nil || a.Pdeathsig != syscall.SIGTERM || !a.Setpgid {
+		t.Errorf("SysProcAttr %+v, want Pdeathsig SIGTERM and Setpgid", a)
 	}
 }
