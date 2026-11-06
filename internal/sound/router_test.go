@@ -52,13 +52,20 @@ type fakePulse struct {
 	defaultOut *string // overrides get-default-sink's output when set
 	failCmd    string  // a pactl command, args joined by spaces, that fails
 
-	// WirePlumber's default.configured.audio.sink, the output the user
-	// chose: nil when the key is absent. set-default-sink writes it, as
-	// pipewire-pulse does. noMetadata makes pw-metadata find no "default"
-	// metadata at all, and metaFail makes its calls fail.
-	configured *string
+	// WirePlumber's stack of the outputs the user chose, most recent first
+	// (state-default-nodes.lua): history[0] is default.configured.audio.sink,
+	// and the key is absent exactly when the stack is empty. Writing the key
+	// -- with pw-metadata, or set-default-sink, as pipewire-pulse does --
+	// moves that output to the top; deleting it erases the whole stack. The
+	// default is then the first output in the stack that exists.
+	// noMetadata makes pw-metadata find no "default" metadata at all, and
+	// metaFail makes its calls fail.
+	history    []string
 	noMetadata bool
 	metaFail   bool
+	// stateFile, when set, is WirePlumber's default-nodes state file, kept
+	// in step with history.
+	stateFile string
 }
 
 func newFakePulse() *fakePulse {
@@ -129,8 +136,8 @@ func (f *fakePulse) sinkName(id int) string {
 	return ""
 }
 
-// removeSink makes a sink vanish the way a Bluetooth disconnect does: its
-// streams fall back to the default. A loopback into it that was loaded with
+// removeSink makes a sink vanish the way a Bluetooth disconnect does: a
+// vanished default is chosen again, and the streams fall back to the default. A loopback into it that was loaded with
 // sink_dont_move=true unloads itself instead, as PulseAudio's does; one
 // without is relinked to the default like any stream.
 func (f *fakePulse) removeSink(name string) {
@@ -152,6 +159,9 @@ func (f *fakePulse) removeSink(name string) {
 		}
 	}
 	f.sinks = kept
+	if f.def == name {
+		f.reselect()
+	}
 	for i := range f.inputs {
 		if f.inputs[i].sink == id {
 			f.inputs[i].sink = f.sinkID(f.def)
@@ -178,7 +188,83 @@ func (f *fakePulse) dropInputsOf(module int) {
 	f.inputs = inputs
 }
 
-func (f *fakePulse) setConfigured(name string) { f.configured = &name }
+// setConfigured writes default.configured.audio.sink: name moves to the top
+// of the stack. The default is left as it is, so a test can set up any
+// starting point.
+func (f *fakePulse) setConfigured(name string) {
+	f.history = append([]string{name}, slices.DeleteFunc(slices.Clone(f.history), func(s string) bool { return s == name })...)
+	f.saveStateFile()
+}
+
+// configured is default.configured.audio.sink, nil when the key is absent.
+func (f *fakePulse) configured() *string {
+	if len(f.history) == 0 {
+		return nil
+	}
+	return &f.history[0]
+}
+
+// writeConfigured is what WirePlumber does when the key is written: the
+// output moves to the top of the stack, and the default is chosen again.
+func (f *fakePulse) writeConfigured(name string) {
+	f.setConfigured(name)
+	f.reselect()
+}
+
+// deleteConfigured is what WirePlumber does when the key is deleted: the
+// whole stack is erased.
+func (f *fakePulse) deleteConfigured() {
+	f.history = nil
+	f.saveStateFile()
+	f.reselect()
+}
+
+// reselect picks the default as WirePlumber does: the first output in the
+// stack that exists, or else, by priority, a hardware output; failing both
+// the default stays.
+func (f *fakePulse) reselect() {
+	for _, name := range f.history {
+		if f.sinkID(name) >= 0 {
+			f.def = name
+			return
+		}
+	}
+	for _, s := range f.sinks {
+		if s.module == 0 {
+			f.def = s.name
+			return
+		}
+	}
+}
+
+// saveStateFile writes the stack as WirePlumber's state file does, keys in
+// no particular order, with a key of another type alongside.
+func (f *fakePulse) saveStateFile() {
+	if f.stateFile == "" {
+		return
+	}
+	lines := []string{"default.configured.audio.source=alsa_input.pci-0000_00_1f.3.analog-stereo"}
+	for i, name := range f.history {
+		key := "default.configured.audio.sink"
+		if i > 0 {
+			key += "." + strconv.Itoa(i-1)
+		}
+		lines = append(lines, key+"="+name)
+	}
+	slices.Reverse(lines)
+	raw := "[default-nodes]\n" + strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(f.stateFile, []byte(raw), 0o600); err != nil {
+		panic(err)
+	}
+}
+
+// withStateFile gives the fake a WirePlumber state file and returns its path.
+func (f *fakePulse) withStateFile(t *testing.T) string {
+	t.Helper()
+	f.stateFile = filepath.Join(t.TempDir(), "default-nodes")
+	f.saveStateFile()
+	return f.stateFile
+}
 
 // metadata models pw-metadata on the "default" metadata, as measured on
 // PipeWire 1.6.9: it prints a "Found" line, then one update line per key it
@@ -196,12 +282,13 @@ func (f *fakePulse) metadata(args []string) (string, error) {
 	const key = "default.configured.audio.sink"
 	switch strings.Join(args, " ") {
 	case "-n default 0 " + key:
-		if f.configured == nil {
+		c := f.configured()
+		if c == nil {
 			return found, nil
 		}
-		return found + fmt.Sprintf("update: id:0 key:'%s' value:'{\"name\":\"%s\"}' type:'Spa:String:JSON'\n", key, *f.configured), nil
+		return found + fmt.Sprintf("update: id:0 key:'%s' value:'{\"name\":\"%s\"}' type:'Spa:String:JSON'\n", key, *c), nil
 	case "-n default -d 0 " + key:
-		f.configured = nil
+		f.deleteConfigured()
 		return found, nil
 	}
 	if len(args) == 6 && strings.Join(args[:4], " ") == "-n default 0 "+key && args[5] == "Spa:String:JSON" {
@@ -211,10 +298,7 @@ func (f *fakePulse) metadata(args []string) (string, error) {
 		if err := json.Unmarshal([]byte(args[4]), &v); err != nil || v.Name == "" {
 			return "", fmt.Errorf("bad value %q", args[4])
 		}
-		f.setConfigured(v.Name)
-		if f.sinkID(v.Name) >= 0 {
-			f.def = v.Name
-		}
+		f.writeConfigured(v.Name)
 		return found, nil
 	}
 	return "", fmt.Errorf("unexpected pw-metadata %q", args)
@@ -289,8 +373,7 @@ func (f *fakePulse) run(name string, args ...string) (string, error) {
 		if f.sinkID(args[1]) < 0 {
 			return "", errors.New("No such entity")
 		}
-		f.def = args[1]
-		f.setConfigured(args[1])
+		f.writeConfigured(args[1])
 		return "", nil
 	case "move-sink-input":
 		idx, _ := strconv.Atoi(args[1])
@@ -356,15 +439,7 @@ func (f *fakePulse) unload(id int) error {
 	f.dropInputsOf(id)
 	for _, s := range f.sinks {
 		if s.module == id {
-			if f.def == s.name { // the session manager falls back to another sink
-				for _, o := range f.sinks {
-					if o.module == 0 {
-						f.def = o.name
-						break
-					}
-				}
-			}
-			f.removeSink(s.name)
+			f.removeSink(s.name) // the session manager picks another default
 		}
 	}
 	return nil
@@ -1385,13 +1460,13 @@ func TestFollowTakesBackAppsFromACastOutputMadeTheDefault(t *testing.T) {
 
 func configuredIs(t *testing.T, f *fakePulse, want string) {
 	t.Helper()
-	switch {
-	case want == "" && f.configured != nil:
-		t.Errorf("WirePlumber's configured default is %s, want the key absent", *f.configured)
-	case want != "" && f.configured == nil:
+	switch c := f.configured(); {
+	case want == "" && c != nil:
+		t.Errorf("WirePlumber's configured default is %s, want the key absent", *c)
+	case want != "" && c == nil:
 		t.Errorf("WirePlumber's configured default is absent, want %s", want)
-	case want != "" && *f.configured != want:
-		t.Errorf("WirePlumber's configured default is %s, want %s", *f.configured, want)
+	case want != "" && *c != want:
+		t.Errorf("WirePlumber's configured default is %s, want %s", *c, want)
 	}
 }
 
@@ -1442,7 +1517,7 @@ func TestRestorePutsBackWirePlumbersConfiguredDefault(t *testing.T) {
 
 func TestRestoreDeletesAConfiguredDefaultThatWasAbsent(t *testing.T) {
 	f := newFakePulse()
-	f.configured = nil
+	f.history = nil
 	dir := t.TempDir()
 	r := NewRouter(f.run, dir)
 	mustAttach(t, r, "airplay:A")

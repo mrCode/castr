@@ -24,6 +24,11 @@ type savedState struct {
 	// be without castr: as it was before the first cast, or the output the
 	// user picked since.
 	Configured configuredDefault `json:"configured_default"`
+	// SinkHistory is WirePlumber's stack of chosen outputs, top first, as
+	// it would be without castr; its top is Configured's name. null when it
+	// could not be read: restore then puts back only Configured. [] is an
+	// empty stack, which restore keeps empty.
+	SinkHistory []string `json:"sink_history"`
 }
 
 func statePath(dir string) string { return filepath.Join(dir, StateFile) }
@@ -103,5 +108,5 @@ func Recover(run Runner, stateDir string) error {
 			return nil
 		}
 	}
-	return errors.Join(loadErr, restore(run, stateDir, saved.LaptopSink, saved.PreviousDefault, saved.Configured))
+	return errors.Join(loadErr, restore(run, stateDir, saved))
 }

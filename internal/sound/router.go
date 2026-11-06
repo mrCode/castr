@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,10 @@ type Router struct {
 	// the daemon dies. It runs once each time the state file is first
 	// written, i.e. once per routing lifetime.
 	StartGuard func() error
+	// HistoryFile is WirePlumber's state file with its stack of chosen
+	// outputs (WirePlumberHistoryFile). It is only ever read. "" or a file
+	// that cannot be read leaves the stack unknown.
+	HistoryFile string
 
 	casts      map[string]*cast
 	lastN      int // never reused within a process
@@ -41,6 +46,7 @@ type Router struct {
 	// look, so Follow can tell when it appears.
 	configured     configuredDefault
 	configuredSeen bool
+	history        []string // WirePlumber's stack without castr, top first; nil when unknown
 }
 
 func NewRouter(run Runner, stateDir string) *Router {
@@ -111,17 +117,25 @@ func (r *Router) takeOver() error {
 	if err != nil {
 		return fmt.Errorf("reading the configured default output: %w", err)
 	}
-	if isCastrName(configured.Name) {
+	history := r.readHistory(configured)
+	switch {
+	case history != nil:
+		// Its top, with castr's own outputs dropped.
+		configured.Name = ""
+		if len(history) > 0 {
+			configured.Name = history[0]
+		}
+	case isCastrName(configured.Name):
 		configured.Name = "" // left by an earlier castr: it is no choice of the user's
 	}
 	sinks, err := listSinks(r.run)
 	if err != nil {
 		return err
 	}
-	r.previous, r.configured = def, configured
+	r.previous, r.configured, r.history = def, configured, history
 	_, r.configuredSeen = sinkID(sinks, configured.Name)
 	if err := r.save(def); err != nil {
-		r.previous, r.configured = "", configuredDefault{}
+		r.previous, r.configured, r.history = "", configuredDefault{}, nil
 		return err
 	}
 	r.laptop = def
@@ -140,6 +154,19 @@ func (r *Router) takeOver() error {
 		return err
 	}
 	return setDefaultSink(r.run, mixSink)
+}
+
+// readHistory reads WirePlumber's stack of chosen outputs, made to agree
+// with the configured default just read; nil when it cannot be read.
+func (r *Router) readHistory(configured configuredDefault) []string {
+	if r.HistoryFile == "" {
+		return nil
+	}
+	history, err := readSinkHistory(r.HistoryFile)
+	if err != nil {
+		return nil
+	}
+	return historyAsConfigured(history, configured)
 }
 
 // failAttach undoes a failed attach: everything when it was the first, or
@@ -340,6 +367,9 @@ func (r *Router) follow(sinks []sink) error {
 		// default; the restore keeps that.
 		r.configured = configuredDefault{Saved: true, Name: def}
 		r.configuredSeen = true
+		if r.history != nil {
+			r.history = moveToTop(r.history, def) // as WirePlumber did
+		}
 		if err := r.adoptLaptop(def); err != nil {
 			return err
 		}
@@ -429,9 +459,14 @@ func (r *Router) adoptLaptop(name string) error {
 // save writes the state file for the routing as it is, with laptop as the
 // laptop's output.
 func (r *Router) save(laptop string) error {
-	return saveState(r.stateDir, savedState{
-		PreviousDefault: r.previous, LaptopSink: laptop, DaemonPID: r.pid, Configured: r.configured,
-	})
+	return saveState(r.stateDir, r.state(laptop))
+}
+
+func (r *Router) state(laptop string) savedState {
+	return savedState{
+		PreviousDefault: r.previous, LaptopSink: laptop, DaemonPID: r.pid,
+		Configured: r.configured, SinkHistory: r.history,
+	}
 }
 
 // RetryRestore finishes a restore that failed, while no cast is routed: the
@@ -462,12 +497,12 @@ func (r *Router) Restore() error {
 }
 
 func (r *Router) restoreLocked() error {
-	err := restore(r.run, r.stateDir, r.laptop, r.previous, r.configured)
+	err := restore(r.run, r.stateDir, r.state(r.laptop))
 
 	r.casts = map[string]*cast{}
 	r.mixModule, r.laptopLoop = modRef{}, modRef{}
 	r.previous, r.laptop, r.sweep = "", "", ""
-	r.configured, r.configuredSeen = configuredDefault{}, false
+	r.configured, r.configuredSeen, r.history = configuredDefault{}, false, nil
 	return err
 }
 
@@ -476,16 +511,19 @@ func (r *Router) restoreLocked() error {
 // if pactl cannot list them, none is unloaded, and the next Recover sweeps
 // them. Every step runs even if an earlier one fails:
 //  1. unload the loopbacks, so nothing feeds castr's outputs;
-//  2. set the default to laptop, the output the user was last using, or to
-//     previous if laptop is gone -- only ever to an output that still exists;
-//     with neither left, the session manager's own choice stands;
+//  2. with WirePlumber's stack of chosen outputs known, rebuild it exactly
+//     (writeSinkHistory): WirePlumber then picks the default from it, as it
+//     would have without castr. Without it, set the default to the laptop,
+//     the output the user was last using, or to previous if that is gone --
+//     only ever to an output that still exists; with neither left, the
+//     session manager's own choice stands;
 //  3. move the app streams on castr_mix to the new default;
 //  4. unload castr's outputs;
-//  5. put WirePlumber's configured default back exactly, which step 2
-//     overwrote: the same output, or no key at all;
+//  5. without the stack, put WirePlumber's configured default back exactly,
+//     which step 2 overwrote: the same output, or no key at all;
 //  6. delete the state file -- only if every step worked, so that a failed
 //     restore is retried: by the daemon, by the guard, or by the next castrd.
-func restore(run Runner, stateDir, laptop, previous string, configured configuredDefault) error {
+func restore(run Runner, stateDir string, s savedState) error {
 	var errs []error
 	mods, err := listModules(run)
 	errs = append(errs, err)
@@ -507,21 +545,40 @@ func restore(run Runner, stateDir, laptop, previous string, configured configure
 
 	present, err := listSinks(run)
 	errs = append(errs, err)
-	target := ""
-	for _, want := range []string{laptop, previous} {
-		if _, ok := sinkID(present, want); !ok || want == "" || isCastrName(want) {
-			continue
-		}
-		if err := setDefaultSink(run, want); err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		target = want
-		break
+	usable := func(name string) bool {
+		_, ok := sinkID(present, name)
+		return ok && name != "" && !isCastrName(name)
 	}
-	if target == "" {
-		if def, err := defaultSink(run); err == nil && def != "" && !isCastrName(def) {
+	stack := s.Configured.Saved && s.SinkHistory != nil
+	target := ""
+	if stack {
+		errs = append(errs, writeSinkHistory(run, s.SinkHistory))
+		// WirePlumber's choice, once it has made it; until then, the one it
+		// makes: the first output in the stack that exists.
+		if def, err := defaultSink(run); err == nil && usable(def) {
 			target = def
+		}
+		for _, want := range append(slices.Clone(s.SinkHistory), s.LaptopSink, s.PreviousDefault) {
+			if target == "" && usable(want) {
+				target = want
+			}
+		}
+	} else {
+		for _, want := range []string{s.LaptopSink, s.PreviousDefault} {
+			if !usable(want) {
+				continue
+			}
+			if err := setDefaultSink(run, want); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			target = want
+			break
+		}
+		if target == "" {
+			if def, err := defaultSink(run); err == nil && def != "" && !isCastrName(def) {
+				target = def
+			}
 		}
 	}
 	// With no real default to move to, unloading castr_mix below hands its
@@ -533,7 +590,9 @@ func restore(run Runner, stateDir, laptop, previous string, configured configure
 	for _, id := range sinks {
 		errs = append(errs, unloadModule(run, id))
 	}
-	errs = append(errs, writeConfiguredDefault(run, configured))
+	if !stack {
+		errs = append(errs, writeConfiguredDefault(run, s.Configured))
+	}
 	if err := errors.Join(errs...); err != nil {
 		return err
 	}
