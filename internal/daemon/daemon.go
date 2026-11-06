@@ -72,8 +72,12 @@ type Daemon struct {
 	soundSources map[string]string
 	// soundNotes says why a cast with sound on has no choice.
 	soundNotes map[string]string
-	stopping   chan struct{}
-	stopOnce   sync.Once
+	// starting holds, by device id, the session a Start in progress
+	// registered. Until that Start returns, an end reported for it leaves the
+	// sound alone: only Start knows whether the cast before it lives on.
+	starting map[string]*session.Session
+	stopping chan struct{}
+	stopOnce sync.Once
 }
 
 // New returns a daemon with the production timings.
@@ -90,6 +94,7 @@ func New(reg *Registry, backends map[string]Backend) *Daemon {
 
 		soundSources: map[string]string{},
 		soundNotes:   map[string]string{},
+		starting:     map[string]*session.Session{},
 	}
 	d.lastActive = d.Clock()
 	return d
@@ -123,12 +128,16 @@ func (d *Daemon) OnState(device discovery.Device, state session.State, reason st
 	if ended {
 		delete(d.sessions, device.ID)
 	}
+	// A refusing backend reports Failed before Start hears ErrRefused, and
+	// the sound may belong to the cast the refused start displaced, which is
+	// still running. Start decides once the backend returns.
+	dropSound := ended && d.starting[device.ID] != s
 	if s.IsActive() {
 		d.lastActive = d.now()
 	}
 	d.mu.Unlock()
 
-	if ended {
+	if dropSound {
 		d.dropSound(device.ID)
 	}
 
@@ -198,6 +207,7 @@ func (d *Daemon) Start(ctx context.Context, deviceID, mode string) error {
 	previous := d.sessions[device.ID]
 	s := session.New(device, mode, d.now)
 	d.sessions[device.ID] = s
+	d.starting[device.ID] = s
 	d.lastActive = d.now()
 	// A restart -- mirror to extend, say -- finds the receiver's sound
 	// already routed, and keeps it: the router would refuse a second Attach.
@@ -212,8 +222,23 @@ func (d *Daemon) Start(ctx context.Context, deviceID, mode string) error {
 	}
 
 	err := backend.Start(ctx, device, mode)
+
+	// From here an end reported for s drops its sound itself; one reported
+	// while the backend ran shows as s missing from the sessions.
+	d.mu.Lock()
+	if d.starting[device.ID] == s {
+		delete(d.starting, device.ID)
+	}
+	current, ok := d.sessions[device.ID]
+	d.mu.Unlock()
+
 	if err == nil {
-		if restart {
+		if !ok {
+			// It ended before the backend returned.
+			d.dropSound(device.ID)
+			return nil
+		}
+		if restart && current == s {
 			// Every cast starts on TV, a restarted one too. A failure leaves
 			// the old choice, which status still reports truthfully.
 			_ = d.Sound.Set(device.ID, sound.TV)
@@ -223,8 +248,11 @@ func (d *Daemon) Start(ctx context.Context, deviceID, mode string) error {
 
 	d.mu.Lock()
 	drop := true
-	switch current, ok := d.sessions[device.ID]; {
-	case ok && current == s:
+	if current, ok := d.sessions[device.ID]; ok && current != s {
+		// A newer start owns the device now, and its sound with it.
+		drop = false
+	} else {
+		// s is still listed, or the backend's own Failed report removed it.
 		delete(d.sessions, device.ID)
 
 		// The backend declined WITHOUT touching the device, so whatever it was
@@ -240,9 +268,6 @@ func (d *Daemon) Start(ctx context.Context, deviceID, mode string) error {
 			// made for it goes, and the old cast's note comes back.
 			drop = attached
 		}
-	case ok:
-		// A newer start owns the device now, and its sound with it.
-		drop = false
 	}
 	d.mu.Unlock()
 

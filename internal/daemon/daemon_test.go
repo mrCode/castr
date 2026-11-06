@@ -976,3 +976,60 @@ func TestAFailedStopKeepsTheSound(t *testing.T) {
 		t.Errorf("detach called %d times for a cast still live", n)
 	}
 }
+
+func TestARefusedStartKeepsTheRunningCastsSound(t *testing.T) {
+	// The real backend reports Failed for the device BEFORE returning
+	// ErrRefused. That report must not take the running cast's sound: its
+	// helper keeps capturing from the source the routing provides.
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	ctx := context.Background()
+	if err := r.daemon.Start(ctx, "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.daemon.SetSound("a", sound.Laptop); err != nil {
+		t.Fatal(err)
+	}
+	r.backend.mu.Lock()
+	r.backend.startErr = session.ErrRefused
+	r.backend.states = []session.State{session.Failed}
+	r.backend.mu.Unlock()
+
+	if err := r.daemon.Start(ctx, "a", session.ModeExtend); !errors.Is(err, session.ErrRefused) {
+		t.Fatalf("err = %v, want ErrRefused", err)
+	}
+
+	if n := snd.count("detach:a"); n != 0 {
+		t.Errorf("detach called %d times for a cast still live", n)
+	}
+	s, ok := r.status(t, "a")
+	if !ok || s.State != string(session.Streaming) || s.Mode != session.ModeMirror {
+		t.Fatalf("session = %+v, ok = %v, want the mirror cast back, streaming", s, ok)
+	}
+	if s.Sound != "laptop" {
+		t.Errorf("sound = %q, want the running cast's laptop kept", s.Sound)
+	}
+	if got := r.daemon.AudioSource("a"); got != "castr_cast_a.monitor" {
+		t.Errorf("audio source = %q, want the running cast's", got)
+	}
+}
+
+func TestACastThatEndsBeforeItsStartReturnsIsDetached(t *testing.T) {
+	// The report arrives while Start is still in progress, so OnState leaves
+	// the sound to Start -- which must then drop it, even though the backend
+	// returned no error.
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	r.backend.states = []session.State{session.Connecting, session.Failed}
+
+	if err := r.daemon.Start(context.Background(), "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := snd.count("detach:a"); n != 1 {
+		t.Errorf("detach called %d times, want once", n)
+	}
+	if got := r.daemon.AudioSource("a"); got != "" {
+		t.Errorf("audio source = %q for a cast that ended, want none", got)
+	}
+}
