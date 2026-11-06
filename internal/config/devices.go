@@ -190,6 +190,7 @@ func MergePairing(srcPath, dstPath string) ([]string, error) {
 		dst = map[string]map[string]any{}
 	}
 
+	now := time.Now()
 	var added []string
 	for receiver, entry := range src {
 		// A partial pairing is not copied: it would replace a working one
@@ -198,7 +199,7 @@ func MergePairing(srcPath, dstPath string) ([]string, error) {
 			continue
 		}
 		target, ok := dst[receiver]
-		if ok && !supersedes(entry, target) {
+		if ok && !supersedes(entry, target, now) {
 			continue
 		}
 		if !ok {
@@ -247,10 +248,14 @@ func MergePairing(srcPath, dstPath string) ([]string, error) {
 //
 // So a pairing that holds the receiver's identity always beats one that does
 // not, whatever time either claims; of two that both hold one, the later
-// paired_at wins, a missing or unreadable one counting as oldest. Only when
-// nothing tells them apart does mode order decide, as it always has: src wins.
+// paired_at wins, a missing or unreadable one counting as oldest -- and so
+// does one more than clockSkew ahead of now, which a clock set wrong or a hand
+// edit would otherwise make win forever: castr would keep that stale pairing
+// over every real one made later, and the receiver would ask for a code at
+// every cast. Only when nothing tells them apart does mode order decide, as it
+// always has: src wins.
 // Asked both ways, as SyncPairing does, the winner is the same either way.
-func supersedes(src, dst map[string]any) bool {
+func supersedes(src, dst map[string]any, now time.Time) bool {
 	srcKnown, dstKnown := hasIdentity(src), hasIdentity(dst)
 	if srcKnown != dstKnown {
 		return srcKnown
@@ -258,7 +263,7 @@ func supersedes(src, dst map[string]any) bool {
 	if !srcKnown {
 		return true
 	}
-	return !pairedAt(src).Before(pairedAt(dst))
+	return !pairedAt(src, now).Before(pairedAt(dst, now))
 }
 
 // hasIdentity reports whether an entry holds the receiver's own key.
@@ -267,12 +272,17 @@ func hasIdentity(entry map[string]any) bool {
 	return ok && key != ""
 }
 
+// clockSkew is how far ahead of now a pairing time is still believed: ordinary
+// drift between the clock that paired and the one comparing, and no more.
+const clockSkew = 5 * time.Minute
+
 // pairedAt is when an entry was paired; the zero time, oldest of all, when it
-// does not say or says something unreadable.
-func pairedAt(entry map[string]any) time.Time {
+// does not say, says something unreadable, or says a time too far ahead of now
+// to have happened.
+func pairedAt(entry map[string]any, now time.Time) time.Time {
 	text, _ := entry["paired_at"].(string)
 	at, err := time.Parse(time.RFC3339Nano, text)
-	if err != nil {
+	if err != nil || at.After(now.Add(clockSkew)) {
 		return time.Time{}
 	}
 	return at

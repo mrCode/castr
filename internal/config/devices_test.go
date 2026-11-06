@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mrCode/castr/internal/discovery"
 )
@@ -751,6 +752,46 @@ func TestAMissingOrUnreadablePairingTimeCountsAsOldest(t *testing.T) {
 				pairing("undated", "undated-key", when, "token-for-extend"),
 				bothHold("dated", "dated-key"))
 		})
+	}
+}
+
+// A pairing time in the future -- a clock set wrong, or a hand edit -- would
+// otherwise win forever: castr would keep that stale pairing over every real
+// one made later, and the receiver would ask for a code at every cast.
+func TestAPairingTimeInTheFutureCountsAsOldest(t *testing.T) {
+	syncBothWays(t,
+		pairing("dated", "dated-key", "2000-01-01T00:00:00Z", "token-for-mirror"),
+		pairing("future", "future-key", "2999-01-01T00:00:00Z", "token-for-extend"),
+		bothHold("dated", "dated-key"))
+}
+
+// A few minutes ahead is ordinary clock drift between the pairing machine
+// and this one, or the helper's clock against castrd's; more is not.
+func TestAPairingTimeIsTrustedUpToFiveMinutesAhead(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	entry := func(at time.Time) map[string]any {
+		return map[string]any{"receiver_ed25519_public": "key",
+			"paired_at": at.Format(time.RFC3339Nano)}
+	}
+	older := entry(now.Add(-time.Hour))
+
+	for _, tc := range []struct {
+		ahead time.Duration
+		wins  bool
+	}{
+		{0, true},
+		{5 * time.Minute, true},
+		{5*time.Minute + time.Second, false},
+		{24 * time.Hour, false},
+	} {
+		if got := supersedes(entry(now.Add(tc.ahead)), older, now); got != tc.wins {
+			t.Errorf("a pairing %v ahead of now: supersedes = %v, want %v", tc.ahead, got, tc.wins)
+		}
+		// Counted as oldest, it loses the other way round too.
+		if got := supersedes(older, entry(now.Add(tc.ahead)), now); got == tc.wins {
+			t.Errorf("against a pairing %v ahead of now, an hour-old one: supersedes = %v, want %v",
+				tc.ahead, got, !tc.wins)
+		}
 	}
 }
 
