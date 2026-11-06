@@ -40,7 +40,12 @@ type fakePulse struct {
 	inputs  []fakeInput
 	def     string
 	nextID  int
-	calls   [][]string
+	// Module ids come from a pool that hands back the most recently freed
+	// id first, as PipeWire's pw_map does (pipewire/map.h): an id castr
+	// remembers may by now name a different module.
+	nextMod  int
+	freeMods []int
+	calls    [][]string
 
 	defaultErr error
 	defaultOut *string // overrides get-default-sink's output when set
@@ -48,13 +53,13 @@ type fakePulse struct {
 }
 
 func newFakePulse() *fakePulse {
-	f := &fakePulse{nextID: 100, def: realSink}
+	f := &fakePulse{nextID: 100, nextMod: 0x20000000, def: realSink}
 	f.addSink(realSink, 0)
 	// Modules that are not castr's. Neither may ever be unloaded. The first
 	// has PipeWire's multi-line args, as `pactl list short modules` prints.
 	f.modules = append(f.modules,
 		fakeModule{id: 1, name: "libpipewire-module-rt", args: "{\n            nice.level    = -11\n            rt.prio       = 88\n        }"},
-		fakeModule{id: f.id(), name: "module-loopback", args: "source=mic.monitor sink=" + realSink + " latency_msec=60"},
+		fakeModule{id: f.modID(), name: "module-loopback", args: "source=mic.monitor sink=" + realSink + " latency_msec=60"},
 	)
 	f.addApp(realSink)
 	f.addApp(realSink)
@@ -62,6 +67,25 @@ func newFakePulse() *fakePulse {
 }
 
 func (f *fakePulse) id() int { f.nextID++; return f.nextID }
+
+func (f *fakePulse) modID() int {
+	if n := len(f.freeMods); n > 0 {
+		id := f.freeMods[n-1]
+		f.freeMods = f.freeMods[:n-1]
+		return id
+	}
+	f.nextMod++
+	return f.nextMod
+}
+
+func (f *fakePulse) moduleByID(id int) (fakeModule, bool) {
+	for _, m := range f.modules {
+		if m.id == id {
+			return m, true
+		}
+	}
+	return fakeModule{}, false
+}
 
 func (f *fakePulse) addSink(name string, module int) {
 	f.sinks = append(f.sinks, fakeSink{id: f.id(), name: name, module: module})
@@ -101,6 +125,7 @@ func (f *fakePulse) removeSink(name string) {
 	for _, m := range f.modules {
 		if m.name == "module-loopback" && moduleArg(m.args, "sink") == name && moduleArg(m.args, "sink_dont_move") == "true" {
 			f.dropInputsOf(m.id)
+			f.freeMods = append(f.freeMods, m.id)
 			continue
 		}
 		mods = append(mods, m)
@@ -230,20 +255,23 @@ func (f *fakePulse) loadModule(args []string) (string, error) {
 		k, v, _ := strings.Cut(a, "=")
 		kv[k] = v
 	}
-	id := f.id()
+	id := f.modID()
 	switch args[0] {
 	case "module-null-sink":
 		if kv["sink_name"] == "" || f.sinkID(kv["sink_name"]) >= 0 {
+			f.freeMods = append(f.freeMods, id)
 			return "", errors.New("bad sink_name")
 		}
 		f.addSink(kv["sink_name"], id)
 	case "module-loopback":
 		src := strings.TrimSuffix(kv["source"], ".monitor")
 		if f.sinkID(src) < 0 || f.sinkID(kv["sink"]) < 0 || kv["latency_msec"] != "30" {
+			f.freeMods = append(f.freeMods, id)
 			return "", errors.New("bad loopback")
 		}
 		f.inputs = append(f.inputs, fakeInput{index: f.id(), sink: f.sinkID(kv["sink"]), owner: id})
 	default:
+		f.freeMods = append(f.freeMods, id)
 		return "", errors.New("unknown module")
 	}
 	f.modules = append(f.modules, fakeModule{id: id, name: args[0], args: strings.Join(args[1:], " ")})
@@ -264,6 +292,7 @@ func (f *fakePulse) unload(id int) error {
 		return errors.New("No such entity")
 	}
 	f.modules = kept
+	f.freeMods = append(f.freeMods, id)
 	f.dropInputsOf(id)
 	for _, s := range f.sinks {
 		if s.module == id {
@@ -880,6 +909,79 @@ func TestFollowFindsANewOutputWhenTheLaptopOutputDisappears(t *testing.T) {
 		}
 		if c := f.changingCallsSince(n); len(c) != 0 {
 			t.Errorf("a second Follow changed things: %v", c)
+		}
+	})
+}
+
+func TestAVanishedLoopbacksIdIsNeverUnloadedWhenReused(t *testing.T) {
+	// The laptop's Bluetooth output disconnects: its pinned loopback unloads
+	// itself, and PipeWire hands its id to the next module loaded. castr must
+	// never unload that id on the strength of remembering it.
+	onBluetooth := func(t *testing.T) (*fakePulse, *Router, int) {
+		f := newFakePulse()
+		r := NewRouter(f.run, t.TempDir())
+		mustAttach(t, r, "airplay:A")
+		mustSet(t, r, "airplay:A", Laptop)
+		f.addSink("bluez_x", 0)
+		f.def = "bluez_x"
+		if err := r.Follow(); err != nil {
+			t.Fatal(err)
+		}
+		old := -1
+		for _, m := range f.castrModules() {
+			if m.name == "module-loopback" && moduleArg(m.args, "sink") == "bluez_x" {
+				old = m.id
+			}
+		}
+		if old < 0 {
+			t.Fatal("no laptop loopback to bluez_x")
+		}
+		f.removeSink("bluez_x")
+		return f, r, old
+	}
+
+	t.Run("Follow's new laptop loopback", func(t *testing.T) {
+		f, r, old := onBluetooth(t)
+		n := len(f.calls)
+		if err := r.Follow(); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range f.calls[n:] {
+			if len(c) > 2 && c[1] == "unload-module" && c[2] == strconv.Itoa(old) {
+				t.Errorf("ran %v: that id had gone, and was handed to the new loopback", c)
+			}
+		}
+		m, ok := f.moduleByID(old)
+		if !ok || moduleArg(m.args, "sink") != realSink {
+			t.Fatalf("module %d is %+v, %v; want the new laptop loopback, reusing the freed id", old, m, ok)
+		}
+		if err := r.Follow(); err != nil {
+			t.Fatal(err)
+		}
+		if !f.hasLoopback("castr_mix.monitor", realSink) {
+			t.Error("the laptop is silent: its new loopback was unloaded")
+		}
+	})
+
+	t.Run("a switch before Follow notices", func(t *testing.T) {
+		f, r, old := onBluetooth(t)
+		mustAttach(t, r, "airplay:B") // its sink takes the freed id
+		if m, ok := f.moduleByID(old); !ok || moduleArg(m.args, "sink_name") != "castr_cast_2" {
+			t.Fatalf("module %d is %+v, %v; want B's sink, reusing the freed id", old, m, ok)
+		}
+		mustSet(t, r, "airplay:A", TV)
+		if f.sinkID("castr_cast_2") < 0 {
+			t.Error("B's sink was unloaded in place of A's vanished laptop loopback")
+		}
+		mustSet(t, r, "airplay:A", Laptop)
+		if err := r.Follow(); err != nil {
+			t.Fatal(err)
+		}
+		if !f.hasLoopback("castr_mix.monitor", realSink) {
+			t.Error("the laptop does not play after switching back to laptop")
+		}
+		if f.sinkID("castr_cast_2") < 0 || !f.hasLoopback("castr_mix.monitor", "castr_cast_2") {
+			t.Error("B lost its sink or its sound")
 		}
 	})
 }

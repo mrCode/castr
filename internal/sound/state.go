@@ -95,5 +95,5 @@ func Recover(run Runner, stateDir string) error {
 			return nil
 		}
 	}
-	return errors.Join(loadErr, restore(run, stateDir, saved.LaptopSink, saved.PreviousDefault, nil))
+	return errors.Join(loadErr, restore(run, stateDir, saved.LaptopSink, saved.PreviousDefault))
 }

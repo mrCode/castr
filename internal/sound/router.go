@@ -9,8 +9,8 @@ import (
 
 type cast struct {
 	n          int
-	sinkModule int
-	loopModule int // castr_mix -> this cast's sink; 0 when the receiver is silent
+	sinkModule modRef
+	loopModule modRef // castr_mix -> this cast's sink; none when the receiver is silent
 	choice     Choice
 }
 
@@ -23,8 +23,8 @@ type Router struct {
 
 	casts      map[string]*cast
 	lastN      int // never reused within a process
-	mixModule  int
-	laptopLoop int    // castr_mix -> the laptop; 0 when the laptop is silent
+	mixModule  modRef
+	laptopLoop modRef // castr_mix -> the laptop; none when the laptop is silent
 	previous   string // the default before the first cast
 	laptop     string // the output the laptop plays through now; "" for none
 	sweep      string // an output whose app streams still need moving into castr_mix
@@ -56,11 +56,11 @@ func (r *Router) Attach(castID string) (string, error) {
 	r.lastN++
 	c := &cast{n: r.lastN, choice: TV}
 	name := castSinkName(c.n)
-	id, err := loadNullSink(r.run, name, castDescription)
+	ref, err := loadNullSink(r.run, name, castDescription)
 	if err != nil {
 		return "", r.failAttach(first, err)
 	}
-	c.sinkModule = id
+	c.sinkModule = ref
 	r.casts[castID] = c
 	if err := fullAndUnmuted(r.run, name); err != nil {
 		return "", r.failAttach(first, err, r.dropCast(castID))
@@ -92,11 +92,11 @@ func (r *Router) takeOver() error {
 	}
 	r.previous, r.laptop = def, def
 
-	id, err := loadNullSink(r.run, mixSink, mixDescription)
+	ref, err := loadNullSink(r.run, mixSink, mixDescription)
 	if err != nil {
 		return err
 	}
-	r.mixModule = id
+	r.mixModule = ref
 	if err := fullAndUnmuted(r.run, mixSink); err != nil {
 		return err
 	}
@@ -113,19 +113,20 @@ func (r *Router) failAttach(first bool, err error, more ...error) error {
 	return errors.Join(errs...)
 }
 
-// dropCast unloads one cast's loopback and sink and forgets it.
+// dropCast unloads one cast's loopback and sink and forgets it. If pactl
+// cannot list the modules to confirm they are still castr's, they stay for
+// Restore or Recover, which find castr's modules by name.
 func (r *Router) dropCast(castID string) error {
 	c, ok := r.casts[castID]
 	if !ok {
 		return nil
 	}
 	delete(r.casts, castID)
-	var errs []error
-	if c.loopModule != 0 {
-		errs = append(errs, unloadModule(r.run, c.loopModule))
+	mods, err := listModules(r.run)
+	if err != nil {
+		return err
 	}
-	errs = append(errs, unloadModule(r.run, c.sinkModule))
-	return errors.Join(errs...)
+	return errors.Join(unloadRef(r.run, c.loopModule, mods), unloadRef(r.run, c.sinkModule, mods))
 }
 
 // Set changes where one cast's sound plays. It only loads or unloads
@@ -165,41 +166,63 @@ func (r *Router) Choice(castID string) (Choice, bool) {
 
 // reconcile makes the loopbacks match the choices: a receiver gets sound when
 // its cast is on TV or Both, and the laptop plays when any cast is on Laptop
-// or Both.
+// or Both. A loopback that has vanished -- its output went, and it unloaded
+// itself -- is forgotten first, so it is loaded again where it is wanted and
+// its old id, which PipeWire may have handed on, is never unloaded. The
+// laptop loopback is loaded only while the laptop's output exists; until
+// then Follow finds it another.
 func (r *Router) reconcile() error {
+	mods, err := listModules(r.run)
+	if err != nil {
+		return err
+	}
+	sinks, err := listSinks(r.run)
+	if err != nil {
+		return err
+	}
+	for _, c := range r.casts {
+		if !c.loopModule.in(mods) {
+			c.loopModule = modRef{}
+		}
+	}
+	if !r.laptopLoop.in(mods) {
+		r.laptopLoop = modRef{}
+	}
+
 	var errs []error
 	laptop := false
 	for _, c := range r.casts {
 		laptop = laptop || c.choice.toLaptop()
 		switch want := c.choice.toReceiver(); {
-		case want && c.loopModule == 0:
-			id, err := loadLoopback(r.run, mixSink+".monitor", castSinkName(c.n))
+		case want && !c.loopModule.loaded():
+			ref, err := loadLoopback(r.run, mixSink+".monitor", castSinkName(c.n))
 			if err != nil {
 				errs = append(errs, err)
 				continue
 			}
-			c.loopModule = id
-		case !want && c.loopModule != 0:
-			if err := unloadModule(r.run, c.loopModule); err != nil {
+			c.loopModule = ref
+		case !want && c.loopModule.loaded():
+			if err := unloadModule(r.run, c.loopModule.id); err != nil {
 				errs = append(errs, err)
 				continue
 			}
-			c.loopModule = 0
+			c.loopModule = modRef{}
 		}
 	}
+	_, laptopPresent := sinkID(sinks, r.laptop)
 	switch {
-	case laptop && r.laptopLoop == 0 && r.laptop != "":
-		id, err := loadLoopback(r.run, mixSink+".monitor", r.laptop)
+	case laptop && !r.laptopLoop.loaded() && r.laptop != "" && laptopPresent:
+		ref, err := loadLoopback(r.run, mixSink+".monitor", r.laptop)
 		if err != nil {
 			errs = append(errs, err)
 		} else {
-			r.laptopLoop = id
+			r.laptopLoop = ref
 		}
-	case !laptop && r.laptopLoop != 0:
-		if err := unloadModule(r.run, r.laptopLoop); err != nil {
+	case !laptop && r.laptopLoop.loaded():
+		if err := unloadModule(r.run, r.laptopLoop.id); err != nil {
 			errs = append(errs, err)
 		} else {
-			r.laptopLoop = 0
+			r.laptopLoop = modRef{}
 		}
 	}
 	return errors.Join(errs...)
@@ -317,21 +340,25 @@ func laptopFallback(sinks []sink, previous string) string {
 
 // adoptLaptop makes name the laptop's output, recording it first so that a
 // restore after a crash goes back to it. The laptop loopback, if wanted, is
-// rebuilt there before the old one goes.
+// rebuilt there before the old one goes. The old one is unloaded only if it
+// is still listed as castr loaded it: when its output vanished it unloaded
+// itself, and the new loopback has most likely just been given its id.
 func (r *Router) adoptLaptop(name string) error {
 	if err := saveState(r.stateDir, savedState{PreviousDefault: r.previous, LaptopSink: name}); err != nil {
 		return err
 	}
 	r.laptop = name
 	old := r.laptopLoop
-	r.laptopLoop = 0
+	r.laptopLoop = modRef{}
 	err := r.reconcile()
-	if old != 0 {
-		// The old output usually vanished and took its loopback with it, so a
-		// failure here is expected; Restore sweeps any leftover by name.
-		_ = unloadModule(r.run, old)
+	if !old.loaded() {
+		return err
 	}
-	return err
+	mods, listErr := listModules(r.run)
+	if listErr != nil {
+		return errors.Join(err, listErr)
+	}
+	return errors.Join(err, unloadRef(r.run, old, mods))
 }
 
 // Restore undoes all routing and puts the laptop back as it was before the
@@ -343,30 +370,18 @@ func (r *Router) Restore() error {
 }
 
 func (r *Router) restoreLocked() error {
-	var known []module
-	for _, c := range r.casts {
-		if c.loopModule != 0 {
-			known = append(known, module{id: c.loopModule, name: loopbackModule})
-		}
-		known = append(known, module{id: c.sinkModule, name: nullSinkModule})
-	}
-	if r.laptopLoop != 0 {
-		known = append(known, module{id: r.laptopLoop, name: loopbackModule})
-	}
-	if r.mixModule != 0 {
-		known = append(known, module{id: r.mixModule, name: nullSinkModule})
-	}
-	err := restore(r.run, r.stateDir, r.laptop, r.previous, known)
+	err := restore(r.run, r.stateDir, r.laptop, r.previous)
 
 	r.casts = map[string]*cast{}
-	r.mixModule, r.laptopLoop = 0, 0
+	r.mixModule, r.laptopLoop = modRef{}, modRef{}
 	r.previous, r.laptop, r.sweep = "", "", ""
 	return err
 }
 
-// restore undoes castr's routing, from the modules pactl lists or, when it
-// cannot list them, the ones the caller knows it loaded. Every step runs even
-// if an earlier one fails:
+// restore undoes castr's routing. It finds castr's modules by listing them,
+// never by remembered ids, which PipeWire may have handed to other modules;
+// if pactl cannot list them, none is unloaded, and the next Recover sweeps
+// them. Every step runs even if an earlier one fails:
 //  1. unload the loopbacks, so nothing feeds castr's outputs;
 //  2. set the default to laptop, the output the user was last using, or to
 //     previous if laptop is gone -- only ever to an output that still exists;
@@ -374,16 +389,13 @@ func (r *Router) restoreLocked() error {
 //  3. move the streams on castr_mix to the new default;
 //  4. unload castr's outputs;
 //  5. delete the state file.
-func restore(run Runner, stateDir, laptop, previous string, known []module) error {
+func restore(run Runner, stateDir, laptop, previous string) error {
 	var errs []error
-	mods, listErr := listModules(run)
-	if listErr != nil {
-		errs = append(errs, listErr)
-		mods = known
-	}
+	mods, err := listModules(run)
+	errs = append(errs, err)
 	var loops, sinks []int
 	for _, m := range mods {
-		if listErr == nil && !isCastrModule(m.args) {
+		if !isCastrModule(m.args) {
 			continue
 		}
 		if m.name == loopbackModule {

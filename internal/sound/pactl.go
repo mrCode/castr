@@ -3,6 +3,7 @@ package sound
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -43,6 +44,50 @@ type sink struct {
 type module struct {
 	id         int
 	name, args string
+}
+
+// modRef is a module castr loaded, as castr loaded it. PipeWire hands the
+// most recently freed module id to the next module loaded (pipewire/map.h),
+// so a remembered id may by now name some other module -- a loopback that
+// unloaded itself when its output vanished, say, replaced by castr's own new
+// loopback. A remembered module is therefore unloaded only while pactl still
+// lists it with the id, the name and the identifying args castr gave it.
+type modRef struct {
+	id   int
+	name string
+	sig  []string // args that identify it, e.g. source=... and sink=...
+}
+
+func (m modRef) loaded() bool { return m.id != 0 }
+
+// in reports whether mods still lists m as castr loaded it.
+func (m modRef) in(mods []module) bool {
+	if m.id == 0 {
+		return false
+	}
+	for _, l := range mods {
+		if l.id != m.id || l.name != m.name {
+			continue
+		}
+		fields := strings.Fields(l.args)
+		for _, want := range m.sig {
+			if !slices.Contains(fields, want) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// unloadRef unloads m if mods still lists it as castr's. A module that has
+// gone already needs no unloading, and an id that now names another module
+// must not be touched.
+func unloadRef(run Runner, m modRef, mods []module) error {
+	if !m.in(mods) {
+		return nil
+	}
+	return unloadModule(run, m.id)
 }
 
 type sinkInput struct {
@@ -162,18 +207,20 @@ func listSinkInputs(run Runner) ([]sinkInput, error) {
 // loadNullSink creates a virtual output. The description is quoted twice
 // because pipewire-pulse splits module args, and then the sink properties, on
 // spaces: unquoted, "castr cast" arrives as "castr".
-func loadNullSink(run Runner, name, description string) (int, error) {
-	return loadModule(run, nullSinkModule, "sink_name="+name,
+func loadNullSink(run Runner, name, description string) (modRef, error) {
+	id, err := loadModule(run, nullSinkModule, "sink_name="+name,
 		fmt.Sprintf(`sink_properties="device.description='%s'"`, description))
+	return modRef{id: id, name: nullSinkModule, sig: []string{"sink_name=" + name}}, err
 }
 
 // loadLoopback copies source into sink. Neither end may be moved: when a
 // loopback's output vanishes, PipeWire would otherwise relink it to the
 // default -- castr_mix -- and feed castr_mix back into itself. Pinned, it
 // unloads itself instead, and Follow finds the laptop a new output.
-func loadLoopback(run Runner, source, sink string) (int, error) {
-	return loadModule(run, loopbackModule, "source="+source, "sink="+sink, "latency_msec=30",
+func loadLoopback(run Runner, source, sink string) (modRef, error) {
+	id, err := loadModule(run, loopbackModule, "source="+source, "sink="+sink, "latency_msec=30",
 		"sink_dont_move=true", "source_dont_move=true")
+	return modRef{id: id, name: loopbackModule, sig: []string{"source=" + source, "sink=" + sink}}, err
 }
 
 func loadModule(run Runner, args ...string) (int, error) {
