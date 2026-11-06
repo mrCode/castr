@@ -2,6 +2,7 @@ package sound
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -292,4 +293,87 @@ func moveAppsOnto(run Runner, target, from string) error {
 		_ = moveSinkInput(run, in.index, target)
 	}
 	return nil
+}
+
+// WirePlumber keeps the output the user chose as default.configured.audio.sink
+// in the "default" metadata, and plays through it whenever it exists: it is
+// how Bluetooth headphones take over when they connect. pactl
+// set-default-sink overwrites it, so castr saves it before taking over and
+// puts it back exactly afterwards.
+const configuredKey = "default.configured.audio.sink"
+
+// configuredDefault is a saved default.configured.audio.sink.
+type configuredDefault struct {
+	// Saved is false in a state file from before castr saved it; restore
+	// then leaves the key alone.
+	Saved bool `json:"saved"`
+	// Name is "" when the key was absent: restore deletes it.
+	Name string `json:"name,omitempty"`
+}
+
+func pwMetadata(run Runner, args ...string) (string, error) {
+	args = append([]string{"-n", "default"}, args...)
+	out, err := run("pw-metadata", args...)
+	if err != nil {
+		return "", fmt.Errorf("pw-metadata %s: %w", strings.Join(args, " "), err)
+	}
+	return out, nil
+}
+
+// readConfiguredDefault reads the key with `pw-metadata -n default 0 <key>`,
+// which prints
+//
+//	Found "default" metadata 40
+//	update: id:0 key:'default.configured.audio.sink' value:'{"name":"<sink>"}' type:'Spa:String:JSON'
+//
+// and only the first line when the key is absent. With no "default"
+// metadata it prints nothing and still exits 0; that is an error here, not
+// an absent key, or restore would delete the user's choice.
+func readConfiguredDefault(run Runner) (configuredDefault, error) {
+	out, err := pwMetadata(run, "0", configuredKey)
+	if err != nil {
+		return configuredDefault{}, err
+	}
+	if !strings.Contains(out, `Found "default" metadata`) {
+		return configuredDefault{}, errors.New("WirePlumber's default metadata is not there")
+	}
+	prefix := "update: id:0 key:'" + configuredKey + "' value:'"
+	for _, line := range strings.Split(out, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), prefix)
+		if !ok {
+			continue
+		}
+		end := strings.LastIndex(rest, "' type:'")
+		if end < 0 {
+			return configuredDefault{}, fmt.Errorf("pw-metadata printed %q", line)
+		}
+		var v struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal([]byte(rest[:end]), &v); err != nil {
+			return configuredDefault{}, fmt.Errorf("parsing %s %q: %w", configuredKey, rest[:end], err)
+		}
+		return configuredDefault{Saved: true, Name: v.Name}, nil
+	}
+	return configuredDefault{Saved: true}, nil
+}
+
+// writeConfiguredDefault puts a saved key back as it was: the same name, or
+// no key at all.
+func writeConfiguredDefault(run Runner, c configuredDefault) error {
+	if !c.Saved {
+		return nil
+	}
+	if c.Name == "" {
+		_, err := pwMetadata(run, "-d", "0", configuredKey)
+		return err
+	}
+	value, err := json.Marshal(struct {
+		Name string `json:"name"`
+	}{c.Name})
+	if err != nil {
+		return err
+	}
+	_, err = pwMetadata(run, "0", configuredKey, string(value), "Spa:String:JSON")
+	return err
 }

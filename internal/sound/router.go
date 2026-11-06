@@ -35,6 +35,11 @@ type Router struct {
 	previous   string // the default before the first cast
 	laptop     string // the output the laptop plays through now; "" for none
 	sweep      string // an output whose app streams still need moving into castr_mix
+	// configured is WirePlumber's configured default as it would be without
+	// castr; configuredSeen says whether that output was there at the last
+	// look, so Follow can tell when it appears.
+	configured     configuredDefault
+	configuredSeen bool
 }
 
 func NewRouter(run Runner, stateDir string) *Router {
@@ -101,9 +106,21 @@ func (r *Router) takeOver() error {
 		// default. Recover runs at startup, so this means it failed.
 		return fmt.Errorf("the default output is castr's own %s, left from an earlier cast", def)
 	}
-	r.previous = def
+	configured, err := readConfiguredDefault(r.run)
+	if err != nil {
+		return fmt.Errorf("reading the configured default output: %w", err)
+	}
+	if isCastrName(configured.Name) {
+		configured.Name = "" // left by an earlier castr: it is no choice of the user's
+	}
+	sinks, err := listSinks(r.run)
+	if err != nil {
+		return err
+	}
+	r.previous, r.configured = def, configured
+	_, r.configuredSeen = sinkID(sinks, configured.Name)
 	if err := r.save(def); err != nil {
-		r.previous = ""
+		r.previous, r.configured = "", configuredDefault{}
 		return err
 	}
 	r.laptop = def
@@ -271,6 +288,9 @@ func (r *Router) Detach(castID string) error {
 //     it becomes the laptop, the laptop loopback moves there, castr_mix is
 //     made the default again, and the app streams on the new output are
 //     moved into castr_mix.
+//   - When WirePlumber's configured default output appears -- Bluetooth
+//     headphones connect -- it becomes the laptop, as WirePlumber would have
+//     switched to it had castr_mix not been its configured default.
 //   - When the laptop's output vanished (the default stays castr_mix, so
 //     nothing else would say), the laptop moves to the previous default, or
 //     else to any real output, or else to none.
@@ -315,6 +335,10 @@ func (r *Router) follow(sinks []sink) error {
 		}
 		r.sweep = def
 	case def != mixSink && def != "" && defPresent:
+		// The user picked it, which made it WirePlumber's configured
+		// default; the restore keeps that.
+		r.configured = configuredDefault{Saved: true, Name: def}
+		r.configuredSeen = true
 		if err := r.adoptLaptop(def); err != nil {
 			return err
 		}
@@ -322,6 +346,12 @@ func (r *Router) follow(sinks []sink) error {
 			return err
 		}
 		r.sweep = def
+	case r.configuredAppeared(sinks):
+		// What WirePlumber would switch to -- Bluetooth headphones that
+		// connect mid-cast -- but castr_mix is its configured default now.
+		if err := r.adoptLaptop(r.configured.Name); err != nil {
+			return err
+		}
 	default:
 		if _, ok := sinkID(sinks, r.laptop); !ok || r.laptop == "" {
 			if next := laptopFallback(sinks, r.previous); next != r.laptop {
@@ -344,6 +374,17 @@ func (r *Router) follow(sinks []sink) error {
 	}
 	r.sweep = ""
 	return nil
+}
+
+// configuredAppeared reports whether the configured default output has just
+// appeared, and is not the laptop already. It also notes whether it is there
+// now, for the next call.
+func (r *Router) configuredAppeared(sinks []sink) bool {
+	name := r.configured.Name
+	_, present := sinkID(sinks, name)
+	appeared := present && !r.configuredSeen
+	r.configuredSeen = present
+	return appeared && name != "" && name != r.laptop && !isCastrName(name)
 }
 
 // laptopFallback picks the laptop's output once its own is gone: the
@@ -387,7 +428,9 @@ func (r *Router) adoptLaptop(name string) error {
 // save writes the state file for the routing as it is, with laptop as the
 // laptop's output.
 func (r *Router) save(laptop string) error {
-	return saveState(r.stateDir, savedState{PreviousDefault: r.previous, LaptopSink: laptop, DaemonPID: r.pid})
+	return saveState(r.stateDir, savedState{
+		PreviousDefault: r.previous, LaptopSink: laptop, DaemonPID: r.pid, Configured: r.configured,
+	})
 }
 
 // RetryRestore finishes a restore that failed, while no cast is routed: the
@@ -418,11 +461,12 @@ func (r *Router) Restore() error {
 }
 
 func (r *Router) restoreLocked() error {
-	err := restore(r.run, r.stateDir, r.laptop, r.previous)
+	err := restore(r.run, r.stateDir, r.laptop, r.previous, r.configured)
 
 	r.casts = map[string]*cast{}
 	r.mixModule, r.laptopLoop = modRef{}, modRef{}
 	r.previous, r.laptop, r.sweep = "", "", ""
+	r.configured, r.configuredSeen = configuredDefault{}, false
 	return err
 }
 
@@ -436,9 +480,11 @@ func (r *Router) restoreLocked() error {
 //     with neither left, the session manager's own choice stands;
 //  3. move the app streams on castr_mix to the new default;
 //  4. unload castr's outputs;
-//  5. delete the state file -- only if every step worked, so that a failed
+//  5. put WirePlumber's configured default back exactly, which step 2
+//     overwrote: the same output, or no key at all;
+//  6. delete the state file -- only if every step worked, so that a failed
 //     restore is retried: by the daemon, by the guard, or by the next castrd.
-func restore(run Runner, stateDir, laptop, previous string) error {
+func restore(run Runner, stateDir, laptop, previous string, configured configuredDefault) error {
 	var errs []error
 	mods, err := listModules(run)
 	errs = append(errs, err)
@@ -486,6 +532,7 @@ func restore(run Runner, stateDir, laptop, previous string) error {
 	for _, id := range sinks {
 		errs = append(errs, unloadModule(run, id))
 	}
+	errs = append(errs, writeConfiguredDefault(run, configured))
 	if err := errors.Join(errs...); err != nil {
 		return err
 	}

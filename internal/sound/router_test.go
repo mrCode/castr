@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -50,10 +51,19 @@ type fakePulse struct {
 	defaultErr error
 	defaultOut *string // overrides get-default-sink's output when set
 	failCmd    string  // a pactl command, args joined by spaces, that fails
+
+	// WirePlumber's default.configured.audio.sink, the output the user
+	// chose: nil when the key is absent. set-default-sink writes it, as
+	// pipewire-pulse does. noMetadata makes pw-metadata find no "default"
+	// metadata at all, and metaFail makes its calls fail.
+	configured *string
+	noMetadata bool
+	metaFail   bool
 }
 
 func newFakePulse() *fakePulse {
 	f := &fakePulse{nextID: 100, nextMod: 0x20000000, def: realSink}
+	f.setConfigured(realSink)
 	f.addSink(realSink, 0)
 	// Modules that are not castr's. Neither may ever be unloaded. The first
 	// has PipeWire's multi-line args, as `pactl list short modules` prints.
@@ -168,8 +178,53 @@ func (f *fakePulse) dropInputsOf(module int) {
 	f.inputs = inputs
 }
 
+func (f *fakePulse) setConfigured(name string) { f.configured = &name }
+
+// metadata models pw-metadata on the "default" metadata, as measured on
+// PipeWire 1.6.9: it prints a "Found" line, then one update line per key it
+// shows; a key that is absent prints nothing more, and with no "default"
+// metadata it prints nothing at all and still exits 0. Writing the key makes
+// WirePlumber follow it when that output exists.
+func (f *fakePulse) metadata(args []string) (string, error) {
+	if f.metaFail {
+		return "", errors.New("pw-metadata: signal: killed")
+	}
+	if f.noMetadata {
+		return "", nil
+	}
+	const found = "Found \"default\" metadata 40\n"
+	const key = "default.configured.audio.sink"
+	switch strings.Join(args, " ") {
+	case "-n default 0 " + key:
+		if f.configured == nil {
+			return found, nil
+		}
+		return found + fmt.Sprintf("update: id:0 key:'%s' value:'{\"name\":\"%s\"}' type:'Spa:String:JSON'\n", key, *f.configured), nil
+	case "-n default -d 0 " + key:
+		f.configured = nil
+		return found, nil
+	}
+	if len(args) == 6 && strings.Join(args[:4], " ") == "-n default 0 "+key && args[5] == "Spa:String:JSON" {
+		var v struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal([]byte(args[4]), &v); err != nil || v.Name == "" {
+			return "", fmt.Errorf("bad value %q", args[4])
+		}
+		f.setConfigured(v.Name)
+		if f.sinkID(v.Name) >= 0 {
+			f.def = v.Name
+		}
+		return found, nil
+	}
+	return "", fmt.Errorf("unexpected pw-metadata %q", args)
+}
+
 func (f *fakePulse) run(name string, args ...string) (string, error) {
 	f.calls = append(f.calls, append([]string{name}, args...))
+	if name == "pw-metadata" {
+		return f.metadata(args)
+	}
 	if name != "pactl" {
 		return "", fmt.Errorf("unexpected command %s", name)
 	}
@@ -235,6 +290,7 @@ func (f *fakePulse) run(name string, args ...string) (string, error) {
 			return "", errors.New("No such entity")
 		}
 		f.def = args[1]
+		f.setConfigured(args[1])
 		return "", nil
 	case "move-sink-input":
 		idx, _ := strconv.Atoi(args[1])
@@ -404,6 +460,9 @@ func (f *fakePulse) allAppsOn(t *testing.T, sink string) {
 func isChanging(c []string) bool {
 	if len(c) < 2 {
 		return false
+	}
+	if c[0] == "pw-metadata" {
+		return len(c) > 5 || slices.Contains(c, "-d") // a write or a delete
 	}
 	switch c[1] {
 	case "load-module", "unload-module", "set-sink-volume", "set-sink-mute", "set-default-sink", "move-sink-input":
@@ -1322,4 +1381,288 @@ func TestFollowTakesBackAppsFromACastOutputMadeTheDefault(t *testing.T) {
 		t.Error("A's receiver lost its sound")
 	}
 	f.checkNoFeedback(t)
+}
+
+func configuredIs(t *testing.T, f *fakePulse, want string) {
+	t.Helper()
+	switch {
+	case want == "" && f.configured != nil:
+		t.Errorf("WirePlumber's configured default is %s, want the key absent", *f.configured)
+	case want != "" && f.configured == nil:
+		t.Errorf("WirePlumber's configured default is absent, want %s", want)
+	case want != "" && *f.configured != want:
+		t.Errorf("WirePlumber's configured default is %s, want %s", *f.configured, want)
+	}
+}
+
+func TestRestorePutsBackWirePlumbersConfiguredDefault(t *testing.T) {
+	// On this machine WirePlumber's configured default is Bluetooth
+	// headphones that are not connected, and it plays through the speakers
+	// meanwhile. set-default-sink at restore would make the speakers the
+	// configured default, and the headphones would no longer take over when
+	// they connect.
+	const headphones = "bluez_output.4C_CF_7C_EF_03_D0.1"
+	const write = "pw-metadata -n default 0 default.configured.audio.sink {\"name\":\"" + headphones + "\"} Spa:String:JSON"
+	for _, how := range []string{"the last detach", "recovery after a crash"} {
+		t.Run(how, func(t *testing.T) {
+			f := newFakePulse()
+			f.setConfigured(headphones)
+			dir := t.TempDir()
+			r := NewRouter(f.run, dir)
+			mustAttach(t, r, "airplay:A")
+			if c, ok := readState(t, dir)["configured_default"].(map[string]any); !ok || c["saved"] != true || c["name"] != headphones {
+				t.Errorf("state saved configured_default %v, want %s", readState(t, dir)["configured_default"], headphones)
+			}
+
+			n := len(f.calls)
+			if how == "the last detach" {
+				if err := r.Detach("airplay:A"); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := Recover(f.run, dir); err != nil {
+				t.Fatal(err)
+			}
+
+			configuredIs(t, f, headphones)
+			if f.def != realSink {
+				t.Errorf("default is %s, want %s", f.def, realSink)
+			}
+			wrote := false
+			for _, c := range f.calls[n:] {
+				wrote = wrote || strings.Join(c, " ") == write
+			}
+			if !wrote {
+				t.Errorf("never ran %s", write)
+			}
+			f.allAppsOn(t, realSink)
+			stateGone(t, dir)
+		})
+	}
+}
+
+func TestRestoreDeletesAConfiguredDefaultThatWasAbsent(t *testing.T) {
+	f := newFakePulse()
+	f.configured = nil
+	dir := t.TempDir()
+	r := NewRouter(f.run, dir)
+	mustAttach(t, r, "airplay:A")
+	configuredIs(t, f, "castr_mix")
+
+	if err := r.Detach("airplay:A"); err != nil {
+		t.Fatal(err)
+	}
+	configuredIs(t, f, "")
+	if f.def != realSink {
+		t.Errorf("default is %s, want %s", f.def, realSink)
+	}
+	stateGone(t, dir)
+}
+
+func TestTheConfiguredDefaultKeepsTheOutputTheUserPickedMidCast(t *testing.T) {
+	f := newFakePulse()
+	r := NewRouter(f.run, t.TempDir())
+	mustAttach(t, r, "airplay:A")
+	f.addSink("bluez_x", 0)
+	f.def = "bluez_x"
+	f.setConfigured("bluez_x") // what picking it does
+	if err := r.Follow(); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Detach("airplay:A"); err != nil {
+		t.Fatal(err)
+	}
+	configuredIs(t, f, "bluez_x")
+	if f.def != "bluez_x" {
+		t.Errorf("default is %s, want bluez_x", f.def)
+	}
+}
+
+func TestAFailedConfiguredDefaultWriteIsRetried(t *testing.T) {
+	const headphones = "bluez_hp"
+	f := newFakePulse()
+	f.setConfigured(headphones)
+	dir := t.TempDir()
+	r := NewRouter(f.run, dir)
+	mustAttach(t, r, "airplay:A")
+	f.metaFail = true
+	if err := r.Detach("airplay:A"); err == nil {
+		t.Fatal("Detach hid the failure")
+	}
+	readState(t, dir)
+	f.metaFail = false
+	if err := r.RetryRestore(); err != nil {
+		t.Fatal(err)
+	}
+	configuredIs(t, f, headphones)
+	stateGone(t, dir)
+}
+
+func TestRoutingNeedsWirePlumbersMetadata(t *testing.T) {
+	// Without it castr could not put the configured default back -- and an
+	// absent "Found" line is not an absent key: deleting the key at restore
+	// would lose the user's choice.
+	for name, breakIt := range map[string]func(*fakePulse){
+		"pw-metadata fails":   func(f *fakePulse) { f.metaFail = true },
+		"no default metadata": func(f *fakePulse) { f.noMetadata = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakePulse()
+			breakIt(f)
+			dir := t.TempDir()
+			r := NewRouter(f.run, dir)
+			if _, err := r.Attach("airplay:A"); err == nil {
+				t.Fatal("Attach succeeded without WirePlumber's metadata")
+			}
+			if c := f.changingCallsSince(0); len(c) != 0 {
+				t.Errorf("changed things: %v", c)
+			}
+			configuredIs(t, f, realSink)
+			stateGone(t, dir)
+		})
+	}
+}
+
+func TestFollowAdoptsTheConfiguredDefaultWhenItAppears(t *testing.T) {
+	// Bluetooth headphones connect mid-cast. WirePlumber would switch to
+	// them, but castr_mix is its configured default now, so castr does it:
+	// they become the laptop.
+	const headphones = "bluez_hp"
+	f := newFakePulse()
+	f.setConfigured(headphones)
+	dir := t.TempDir()
+	r := NewRouter(f.run, dir)
+	mustAttach(t, r, "airplay:A")
+	mustSet(t, r, "airplay:A", Laptop)
+
+	f.addSink(headphones, 0)
+	if err := r.Follow(); err != nil {
+		t.Fatal(err)
+	}
+	if !f.hasLoopback("castr_mix.monitor", headphones) {
+		t.Error("the laptop does not play on the headphones")
+	}
+	if f.hasLoopback("castr_mix.monitor", realSink) {
+		t.Error("the laptop still plays on the speakers")
+	}
+	if s := readState(t, dir); s["laptop_sink"] != headphones {
+		t.Errorf("laptop_sink %v, want %s", s["laptop_sink"], headphones)
+	}
+	if f.def != "castr_mix" {
+		t.Errorf("default is %s, want castr_mix", f.def)
+	}
+	f.checkNoFeedback(t)
+
+	n := len(f.calls)
+	if err := r.Follow(); err != nil {
+		t.Fatal(err)
+	}
+	if c := f.changingCallsSince(n); len(c) != 0 {
+		t.Errorf("a second Follow changed things: %v", c)
+	}
+
+	if err := r.Detach("airplay:A"); err != nil {
+		t.Fatal(err)
+	}
+	if f.def != headphones {
+		t.Errorf("default is %s, want %s", f.def, headphones)
+	}
+	configuredIs(t, f, headphones)
+}
+
+func TestFollowLeavesAConfiguredDefaultThatWasThereAllAlong(t *testing.T) {
+	// Present at the start but not what WirePlumber played through: it has
+	// not "appeared", and adopting it would move the sound unasked.
+	f := newFakePulse()
+	f.addSink("bluez_hp", 0)
+	f.setConfigured("bluez_hp")
+	r := NewRouter(f.run, t.TempDir())
+	mustAttach(t, r, "airplay:A")
+	mustSet(t, r, "airplay:A", Laptop)
+	if err := r.Follow(); err != nil {
+		t.Fatal(err)
+	}
+	if !f.hasLoopback("castr_mix.monitor", realSink) || f.hasLoopback("castr_mix.monitor", "bluez_hp") {
+		t.Error("the laptop moved off the output it was playing through")
+	}
+}
+
+func TestFollowLetsTheConfiguredDefaultComeBack(t *testing.T) {
+	// The headphones the laptop played through disconnect and reconnect.
+	f := newFakePulse()
+	f.addSink("bluez_hp", 0)
+	f.def = "bluez_hp"
+	f.setConfigured("bluez_hp")
+	r := NewRouter(f.run, t.TempDir())
+	mustAttach(t, r, "airplay:A")
+	mustSet(t, r, "airplay:A", Laptop)
+
+	f.removeSink("bluez_hp")
+	if err := r.Follow(); err != nil {
+		t.Fatal(err)
+	}
+	if !f.hasLoopback("castr_mix.monitor", realSink) {
+		t.Fatal("the laptop did not fall back to the speakers")
+	}
+	f.addSink("bluez_hp", 0)
+	if err := r.Follow(); err != nil {
+		t.Fatal(err)
+	}
+	if !f.hasLoopback("castr_mix.monitor", "bluez_hp") || f.hasLoopback("castr_mix.monitor", realSink) {
+		t.Error("the laptop did not go back to the headphones")
+	}
+}
+
+func TestACastrConfiguredDefaultLeftBehindIsNotPutBack(t *testing.T) {
+	// An older castr left castr_mix as WirePlumber's configured default:
+	// that was never the user's choice.
+	f := newFakePulse()
+	f.setConfigured("castr_mix")
+	r := NewRouter(f.run, t.TempDir())
+	mustAttach(t, r, "airplay:A")
+	if err := r.Detach("airplay:A"); err != nil {
+		t.Fatal(err)
+	}
+	configuredIs(t, f, "")
+}
+
+func TestNothingEverChangesARealOutputsVolume(t *testing.T) {
+	// During a cast the volume keys act on castr_mix, the whole cast's
+	// loudness. The real outputs' own volume and mute are never touched, so
+	// they are exactly as they were after the cast.
+	f := newFakePulse()
+	f.setConfigured("bluez_hp")
+	r := NewRouter(f.run, t.TempDir())
+	mustAttach(t, r, "airplay:A")
+	mustAttach(t, r, "chromecast:B")
+	for _, c := range []Choice{Laptop, Both, TV, Both} {
+		mustSet(t, r, "airplay:A", c)
+	}
+	f.addSink("bluez_hp", 0) // headphones connect
+	if err := r.Follow(); err != nil {
+		t.Fatal(err)
+	}
+	f.addSink("bluez_x", 0) // the user picks another output
+	f.def = "bluez_x"
+	if err := r.Follow(); err != nil {
+		t.Fatal(err)
+	}
+	f.removeSink("bluez_x")
+	if err := r.Follow(); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Detach("airplay:A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Detach("chromecast:B"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range f.calls {
+		if len(c) > 2 && (c[1] == "set-sink-volume" || c[1] == "set-sink-mute") && !isCastrName(c[2]) {
+			t.Errorf("touched a real output's volume: %v", c)
+		}
+		if len(c) > 1 && (c[1] == "set-sink-input-volume" || c[1] == "set-sink-input-mute") {
+			t.Errorf("touched a stream's volume: %v", c)
+		}
+	}
 }

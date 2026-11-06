@@ -20,6 +20,10 @@ type savedState struct {
 	// DaemonPID is the castrd that owns the routing: a dead daemon's guard
 	// leaves a new daemon's routing alone.
 	DaemonPID int `json:"daemon_pid,omitempty"`
+	// Configured is WirePlumber's default.configured.audio.sink as it would
+	// be without castr: as it was before the first cast, or the output the
+	// user picked since.
+	Configured configuredDefault `json:"configured_default"`
 }
 
 func statePath(dir string) string { return filepath.Join(dir, StateFile) }
@@ -99,5 +103,5 @@ func Recover(run Runner, stateDir string) error {
 			return nil
 		}
 	}
-	return errors.Join(loadErr, restore(run, stateDir, saved.LaptopSink, saved.PreviousDefault))
+	return errors.Join(loadErr, restore(run, stateDir, saved.LaptopSink, saved.PreviousDefault, saved.Configured))
 }
