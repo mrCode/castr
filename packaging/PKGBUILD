@@ -33,6 +33,7 @@ depends=(
   'gst-plugins-good'      # AAC parsing
   'gst-plugins-bad'       # H.264 parsing, HLS output
   'gst-libav'             # the AAC track a Chromecast refuses to play without
+  'libpulse'              # pactl: routes a cast's sound
 )
 
 # The encoder is chosen at runtime: a machine with Intel graphics needs a
@@ -41,7 +42,6 @@ depends=(
 optdepends=(
   'gst-plugin-va: hardware H.264 encoding on Intel and AMD'
   'gst-plugins-ugly: x264, the software encoding fallback'
-  'libpulse: pactl, which castr-airplay uses to send audio to an Apple TV'
   'hyprland: required in practice — castr drives its outputs and screen-share portal'
   'libnotify: desktop notifications'
   'quickshell: bar widget on Omarchy Quarto and later (see castr-indicator)'

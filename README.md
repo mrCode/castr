@@ -55,6 +55,26 @@ active monitors.
 The daemon starts itself on first use and exits after fifteen minutes idle. It
 stays that long on purpose — discovery is only fast while its cache is warm.
 
+### Sound
+
+A cast's sound plays on the receiver by default, and the laptop goes quiet.
+Switch it any time, mid-cast, from the SOUND buttons in the widget or:
+
+```bash
+castr sound <id> tv        # or laptop, or both
+castr sound <id>           # print the current choice
+```
+
+Chromecasts get real sound too. "Both" on a Chromecast echoes: the television
+runs one to three seconds behind, so you hear everything twice. Use it on an
+Apple TV, or not at all.
+
+castr routes sound with `pactl` (the `libpulse` package). If it cannot, the
+cast still starts, with sound on both, and the widget says why. The laptop's
+sound always comes back afterwards, even if castrd is killed.
+
+`[airplay] audio = false` turns sound off for every receiver.
+
 ### Pairing
 
 The first cast to an Apple TV puts a code on its screen, and the cast waits
@@ -154,7 +174,8 @@ target_latency_ms = 100     # NOT just a responsiveness knob: below ~80 a
                             # unbroken at 100. castr raises anything lower.
 ready_timeout = 60          # capture can begin 23s after the session is ready
                             # raise it if you need time to answer the share prompt
-audio = true
+audio = true                # false turns sound off for every receiver, Apple TV
+                            # and Chromecast alike; see Sound
 ```
 
 Upgrading from omarchy-cast? Your settings and hand-added receivers are copied
