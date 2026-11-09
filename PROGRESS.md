@@ -73,6 +73,15 @@
 > the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
 > (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
 > gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
+> **2026-11-10: issue #3 (@diegosoares) — configurable extend geometry + codec.**
+> Asks for `[capture] geometry` (default 1920x1080@60, or "auto" for the
+> receiver's canvas), `[capture] codec = auto|h264|hevc` forwarded as
+> `-video-codec`, and `vah265enc` in the helper's HEVC list (AMD/Intel have no
+> HW HEVC path today). All three verified true. Replied (issuecomment
+> 6752503941): planned after the sound-output feature. The StreamGeometry
+> comment says the old fallback path had no scaler — re-test that with today's
+> castr-airplay before lifting the constant. Ping them for testing on a branch.
+>
 > **2026-11-06: RELEASED castr 0.3.0** (tag v0.3.0; AUR 0.3.0-1, AUR commit
 > 49da5f1), with helper `castr-airplay-1` (mrCode/doubletake 65eab06) and plugin
 > v1.3.0 (castr-indicator 5646147; sync-plugin-repo.sh says "in sync").
