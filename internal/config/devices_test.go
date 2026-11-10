@@ -1001,3 +1001,65 @@ func TestAnOddlyShapedCredentialsFileDoesNotPanic(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPullingBringsTheOtherModesPairingsIntoOneModeOnly(t *testing.T) {
+	// castrd runs for fifteen minutes after a cast, and syncing only when it
+	// starts meant extending straight after a first mirror asked the
+	// television for a code again. A cast pulls before it starts instead --
+	// into its own file only, because another mode's file may belong to a
+	// helper that is running and rewrites it from memory.
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), pairedTV)
+	extendOnly := `{"11:22:33:44:55:66":{"pairing_id":"id-2","ed25519_public":"pub-2",` +
+		`"ed25519_seed":"seed-2","restore_token":"token-for-extend"}}`
+	putCreds(t, CredsPath(dir, "extend"), extendOnly)
+
+	if err := PullPairing(dir, "extend", []string{"mirror", "extend"}); err != nil {
+		t.Fatal(err)
+	}
+
+	extend := readCredsMap(t, CredsPath(dir, "extend"))
+	if extend["AA:BB:CC:DD:EE:FF"]["ed25519_seed"] != "seed-1" {
+		t.Errorf("extend did not learn mirror's pairing: %v", extend)
+	}
+	if extend["11:22:33:44:55:66"]["restore_token"] != "token-for-extend" {
+		t.Errorf("extend lost its own entry: %v", extend)
+	}
+	raw, err := os.ReadFile(CredsPath(dir, "mirror"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != pairedTV {
+		t.Errorf("mirror's file was rewritten:\n%s", raw)
+	}
+}
+
+func TestWritingCredentialsLeavesNoTemporaryFileBehind(t *testing.T) {
+	// The file is replaced by rename, so a helper starting at that moment
+	// reads the old pairings or the new ones, never half a file.
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), pairedTV)
+
+	if err := PullPairing(dir, "extend", []string{"mirror", "extend"}); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := os.ReadDir(filepath.Dir(CredsPath(dir, "extend")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if len(names) != 2 {
+		t.Errorf("creds directory holds %v, want only mirror.json and extend.json", names)
+	}
+	info, err := os.Stat(CredsPath(dir, "extend"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("extend.json mode = %v, want 0600: it holds private keys", info.Mode().Perm())
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"sync"
 	"time"
 
@@ -54,6 +55,10 @@ type Backend struct {
 	// AudioSource names the source carrying a cast's sound, by receiver.
 	// Nil, or an empty answer, leaves the helper to its default.
 	AudioSource func(deviceID string) string
+	// PullPairing copies the pairings other modes have saved into a mode's
+	// credentials file. Start calls it before the helper reads that file,
+	// unless another cast is using it. Nil skips it.
+	PullPairing func(mode string) error
 
 	mu       sync.Mutex
 	sessions map[string]*castSession
@@ -131,6 +136,8 @@ func (b *Backend) Start(ctx context.Context, device discovery.Device, mode strin
 		b.emit(device, session.Failed, err.Error())
 		return err
 	}
+
+	b.pullPairing(device, mode)
 
 	credsPath, err := b.Creds(mode)
 	if err != nil {
@@ -489,6 +496,31 @@ func (b *Backend) SubmitPin(ctx context.Context, device discovery.Device, pin st
 		return fmt.Errorf("sending PIN: %w", err)
 	}
 	return b.awaitReady(ctx, cs)
+}
+
+// pullPairing brings the other modes' pairings into mode's file, so a receiver
+// paired in one mode is not asked for a code in the other. A cast already
+// using that file -- one mirror among several -- is left alone: its helper
+// may be writing the file, and rewrites it from memory when it saves. A failed
+// pull costs at most a code typed again, so the cast goes on regardless.
+func (b *Backend) pullPairing(device discovery.Device, mode string) {
+	if b.PullPairing == nil {
+		return
+	}
+	b.mu.Lock()
+	inUse := false
+	for _, cs := range b.sessions {
+		if cs.mode == mode {
+			inUse = true
+		}
+	}
+	b.mu.Unlock()
+	if inUse {
+		return
+	}
+	if err := b.PullPairing(mode); err != nil {
+		log.Printf("%s: pairings from the other modes were not copied: %v", device.Name, err)
+	}
 }
 
 func (b *Backend) activeExtend() *castSession {

@@ -367,6 +367,27 @@ func SyncPairing(stateDir string, modes []string) error {
 	return nil
 }
 
+// PullPairing brings every receiver the other modes have paired with into
+// mode's own file, just before mode casts. Syncing only when castrd started
+// was not enough: castrd keeps running for fifteen minutes after a cast, so
+// extending straight after a first mirror asked the television for a code
+// that had just been typed.
+//
+// It writes mode's file and nothing else. Another mode's file can belong to a
+// helper that is casting right now, which rewrites it from memory whenever it
+// saves -- and castr could read it half-written.
+func PullPairing(stateDir, mode string, modes []string) error {
+	for _, from := range modes {
+		if from == mode {
+			continue
+		}
+		if _, err := MergePairing(CredsPath(stateDir, from), CredsPath(stateDir, mode)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func readCreds(path string) (map[string]map[string]any, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -388,10 +409,26 @@ func writeCreds(path string, creds map[string]map[string]any) error {
 	if err != nil {
 		return fmt.Errorf("encoding credentials: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(raw, '\n'), 0o600)
+	// Replaced by rename, never rewritten in place: a helper starting at that
+	// moment reads the old pairings or the new ones, never half a file -- which
+	// it would take for no pairings at all, and ask for a code.
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) // a no-op once renamed
+	if _, err := tmp.Write(append(raw, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // LegacyName is the package castr replaces. Its files are read once, on first

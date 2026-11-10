@@ -365,7 +365,10 @@ func newAirPlayBackend(cfg config.Config, stateDir string) *airplay.Backend {
 		Hypr:         hyprctl,
 		ReadyTimeout: time.Duration(cfg.AirPlay.ReadyTimeout * float64(time.Second)),
 		Creds:        func(mode string) (string, error) { return credsPath(stateDir, mode) },
-		Spawn:        spawner(cfg, stateDir),
+		PullPairing: func(mode string) error {
+			return config.PullPairing(stateDir, mode, session.Modes)
+		},
+		Spawn: spawner(cfg, stateDir),
 	}
 }
 

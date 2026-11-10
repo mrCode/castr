@@ -991,3 +991,88 @@ func TestExtendWithNoGeometryIsTheSameSizeAsEver(t *testing.T) {
 		t.Errorf("extend output is %q, want 1920x1080@60", got)
 	}
 }
+
+// pulls records the modes a backend asked to pull pairings into, in order,
+// alongside the spawns, so a test can tell which came first.
+type pulls struct {
+	mu     sync.Mutex
+	events []string
+	err    error
+}
+
+func (p *pulls) hook(h *harness) {
+	spawn := h.backend.Spawn
+	h.backend.PullPairing = func(mode string) error {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.events = append(p.events, "pull "+mode)
+		return p.err
+	}
+	h.backend.Spawn = func(ctx context.Context, argv []string) (Process, error) {
+		p.mu.Lock()
+		p.events = append(p.events, "spawn")
+		p.mu.Unlock()
+		return spawn(ctx, argv)
+	}
+}
+
+func (p *pulls) got() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return strings.Join(p.events, ", ")
+}
+
+func TestACastPullsItsModesPairingsBeforeTheHelperStarts(t *testing.T) {
+	// The helper reads its credentials file once, at start: a pairing mirror
+	// saved a minute ago is only any use to extend if it is there by then.
+	h := newHarness(t, readyOutput)
+	p := &pulls{}
+	p.hook(h)
+	ctx := context.Background()
+
+	if err := h.backend.Start(ctx, device("a", "One"), session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.backend.Start(ctx, device("a", "One"), session.ModeExtend); err != nil {
+		t.Fatal(err)
+	}
+
+	if want := "pull mirror, spawn, pull extend, spawn"; p.got() != want {
+		t.Errorf("events = %q, want %q", p.got(), want)
+	}
+}
+
+func TestAModeAnotherCastIsUsingIsNotPulledInto(t *testing.T) {
+	// A running helper rewrites its file from memory and may be mid-write, so
+	// castr leaves a file in use alone. Replacing one device's own cast is not
+	// "in use": that cast is stopped first.
+	h := newHarness(t, readyOutput)
+	p := &pulls{}
+	p.hook(h)
+	ctx := context.Background()
+
+	for _, id := range []string{"a", "b", "b"} {
+		if err := h.backend.Start(ctx, device(id, "TV "+id), session.ModeMirror); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if want := "pull mirror, spawn, spawn, spawn"; p.got() != want {
+		t.Errorf("events = %q, want %q", p.got(), want)
+	}
+}
+
+func TestAFailedPullDoesNotStopTheCast(t *testing.T) {
+	// The worst a missed pull costs is typing a code again; refusing to cast
+	// would cost the cast.
+	h := newHarness(t, readyOutput)
+	p := &pulls{err: errors.New("disk full")}
+	p.hook(h)
+
+	if err := h.backend.Start(context.Background(), device("a", "One"), session.ModeExtend); err != nil {
+		t.Fatalf("cast failed over a pull error: %v", err)
+	}
+	if !h.sawState(session.Streaming) {
+		t.Error("the cast never reached streaming")
+	}
+}
