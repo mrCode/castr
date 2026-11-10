@@ -20,6 +20,10 @@ type fake struct {
 	// Hyprland 0.56.2 did through `hyprctl keyword`, and castr believed it all
 	// the way to a live Apple TV that would have shown an empty desktop.
 	ignoreMirror bool
+
+	// createAt is the mode a new headless output starts in, "1920x1080@60"
+	// when empty.
+	createAt string
 }
 
 func newFake(monitors ...Monitor) *fake {
@@ -57,8 +61,11 @@ func (f *fake) run(name string, args ...string) (string, error) {
 		if f.has(want) {
 			return "Name already taken", nil
 		}
-		f.monitors = append(f.monitors, Monitor{Name: want,
-			Width: 1920, Height: 1080, Refresh: 60, MirrorOf: "none"})
+		created := Monitor{Name: want, Width: 1920, Height: 1080, Refresh: 60, MirrorOf: "none"}
+		if f.createAt != "" {
+			fmt.Sscanf(f.createAt, "%dx%d@%f", &created.Width, &created.Height, &created.Refresh)
+		}
+		f.monitors = append(f.monitors, created)
 		return "ok", nil
 
 	case strings.HasPrefix(joined, "output remove"):
@@ -180,6 +187,16 @@ func (f *fake) names() []string {
 	return out
 }
 
+// monitor returns the named output's state, or a zero Monitor.
+func (f *fake) monitor(name string) Monitor {
+	for _, m := range f.monitors {
+		if m.Name == name {
+			return m
+		}
+	}
+	return Monitor{}
+}
+
 func (f *fake) has(name string) bool {
 	for _, m := range f.monitors {
 		if m.Name == name {
@@ -192,7 +209,7 @@ func (f *fake) has(name string) bool {
 func TestCreateReturnsTheOutputName(t *testing.T) {
 	f := newFake(panel())
 
-	got, err := CreateOutput(f.run, OutputExtend, "")
+	got, err := CreateOutput(f.run, OutputExtend, "", DefaultStreamGeometry)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +225,7 @@ func TestCreateReturnsTheOutputName(t *testing.T) {
 func TestMirrorOutputMirrorsTheGivenMonitor(t *testing.T) {
 	f := newFake(panel())
 
-	if _, err := CreateOutput(f.run, OutputMirror, "eDP-2"); err != nil {
+	if _, err := CreateOutput(f.run, OutputMirror, "eDP-2", DefaultStreamGeometry); err != nil {
 		t.Fatal(err)
 	}
 
@@ -239,7 +256,7 @@ func TestAnExistingStaleRuleDoesNotLookLikeFailure(t *testing.T) {
 	// the caller fall back to switching the panel, the very thing this avoids.
 	f := newFake(panel(), Monitor{Name: OutputMirror, Width: 1920, Height: 1080})
 
-	got, err := CreateOutput(f.run, OutputMirror, "eDP-2")
+	got, err := CreateOutput(f.run, OutputMirror, "eDP-2", DefaultStreamGeometry)
 	if err != nil {
 		t.Fatalf("create reported failure for an output that exists: %v", err)
 	}
@@ -254,7 +271,7 @@ func TestARenamedOutputIsStillFound(t *testing.T) {
 	f := newFake(panel())
 	f.monitors = append(f.monitors, Monitor{Name: "HEADLESS-2"})
 
-	got, err := CreateOutput(f.run, OutputExtend, "")
+	got, err := CreateOutput(f.run, OutputExtend, "", DefaultStreamGeometry)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +286,7 @@ func TestAFailedConfigurationLeavesNothingBehind(t *testing.T) {
 	f := newFake(panel())
 	f.failOn = "eval"
 
-	_, err := CreateOutput(f.run, OutputExtend, "")
+	_, err := CreateOutput(f.run, OutputExtend, "", DefaultStreamGeometry)
 
 	if err == nil {
 		t.Fatal("want an error when configuration fails")
@@ -397,7 +414,7 @@ func TestAMirrorThatTheCompositorSilentlyIgnoresIsAFailure(t *testing.T) {
 	f := newFake(panel())
 	f.ignoreMirror = true
 
-	_, err := CreateOutput(f.run, OutputMirror, "eDP-2")
+	_, err := CreateOutput(f.run, OutputMirror, "eDP-2", DefaultStreamGeometry)
 
 	if err == nil {
 		t.Fatal("a mirror that was never applied was reported as success")
@@ -416,7 +433,7 @@ func TestRemovingAMirroringOutputUnmirrorsItFirst(t *testing.T) {
 	// 0, and the output stays on the desk stealing windows until the
 	// compositor restarts.
 	f := newFake(panel())
-	name, err := CreateOutput(f.run, OutputMirror, "eDP-2")
+	name, err := CreateOutput(f.run, OutputMirror, "eDP-2", DefaultStreamGeometry)
 	if err != nil {
 		t.Fatal(err)
 	}

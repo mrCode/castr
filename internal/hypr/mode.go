@@ -5,13 +5,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
-// StreamGeometry is what doubletake negotiates. Its fallback capture path has
-// no scaler, so a higher-resolution source makes the receiver drop the
-// connection outright.
-const StreamGeometry = "1920x1080@60"
+// DefaultStreamGeometry is the extend output's mode when [capture] geometry
+// is not set, and the only size castr used before it could be set.
+//
+// It was once a hard limit: doubletake's old fallback capture path had no
+// scaler, so a source larger than the receiver's canvas made the receiver
+// drop the connection outright. castr-airplay now scales the capture to the
+// canvas it negotiated, so the output may be larger than the receiver -- a
+// 4K output to a 1080p television is scaled down, not refused.
+const DefaultStreamGeometry = "1920x1080@60"
 
 // SavedModeFilename remembers the panel's real mode across a daemon restart.
 //
@@ -102,11 +106,3 @@ func loadMode(stateDir string) (*SavedMode, error) {
 }
 
 func clearMode(stateDir string) { _ = os.Remove(modePath(stateDir)) }
-
-// StreamWidth and StreamHeight are the geometry above, split out for callers
-// that need the numbers.
-var StreamWidth, StreamHeight = func() (int, int) {
-	var w, h int
-	fmt.Sscanf(strings.Split(StreamGeometry, "@")[0], "%dx%d", &w, &h)
-	return w, h
-}()

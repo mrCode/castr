@@ -41,7 +41,11 @@ var ErrRefused = session.ErrRefused
 
 // Backend supervises one doubletake child per session.
 type Backend struct {
-	Config       Config
+	Config Config
+	// Geometry is the extend output's mode, "WxH@R" ([capture] geometry).
+	// Empty means hypr.DefaultStreamGeometry. Mirror creates no output, so
+	// only castr-airplay's -max-size (Config.MaxSize) applies there.
+	Geometry     string
 	Hypr         hypr.Runner
 	Spawn        Spawner
 	Creds        CredsFor
@@ -155,7 +159,8 @@ func (b *Backend) Start(ctx context.Context, device discovery.Device, mode strin
 	return b.awaitReady(ctx, cs)
 }
 
-// prepareOutput gives the encoder a 1920x1080 source without touching the panel.
+// prepareOutput gives extend a source at the configured geometry without
+// touching the panel.
 func (b *Backend) prepareOutput(cs *castSession) error {
 	b.mu.Lock()
 	inUse := b.outputsInUse()
@@ -163,7 +168,7 @@ func (b *Backend) prepareOutput(cs *castSession) error {
 
 	if cs.mode == session.ModeExtend {
 		_, _ = hypr.CleanupStrays(b.Hypr, inUse)
-		name, err := hypr.CreateOutput(b.Hypr, hypr.OutputExtend, "")
+		name, err := hypr.CreateOutput(b.Hypr, hypr.OutputExtend, "", b.Geometry)
 		if err != nil {
 			return fmt.Errorf("could not create a virtual display for extend mode: %w", err)
 		}

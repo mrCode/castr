@@ -19,6 +19,9 @@ func TestTheCodecAndGeometryReachTheAirPlayBackend(t *testing.T) {
 	if b.Config.Codec != "hevc" {
 		t.Errorf("codec = %q, want hevc", b.Config.Codec)
 	}
+	if b.Geometry != "2560x1440@60" {
+		t.Errorf("extend geometry = %q, want 2560x1440@60", b.Geometry)
+	}
 	if b.Config.MaxSize != "2560x1440" {
 		t.Errorf("max size = %q, want 2560x1440", b.Config.MaxSize)
 	}

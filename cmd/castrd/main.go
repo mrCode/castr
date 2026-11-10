@@ -361,6 +361,7 @@ func newAirPlayBackend(cfg config.Config, stateDir string) *airplay.Backend {
 			Codec:           cfg.Capture.Codec,
 			MaxSize:         cfg.Capture.MaxSize(),
 		},
+		Geometry:     cfg.Capture.Geometry,
 		Hypr:         hyprctl,
 		ReadyTimeout: time.Duration(cfg.AirPlay.ReadyTimeout * float64(time.Second)),
 		Creds:        func(mode string) (string, error) { return credsPath(stateDir, mode) },

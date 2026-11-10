@@ -104,6 +104,7 @@ type fakeMonitor struct {
 	name     string
 	width    int
 	height   int
+	refresh  float64
 	focused  bool
 	mirrorOf string
 }
@@ -170,6 +171,10 @@ func (f *fakeHypr) eval(code string) string {
 	if i < 0 {
 		return "ok"
 	}
+	if mode, ok := luaField(code, "mode"); ok {
+		m := &f.monitors[i]
+		fmt.Sscanf(mode, "%dx%d@%f", &m.width, &m.height, &m.refresh)
+	}
 	if mirror, ok := luaField(code, "mirror"); ok {
 		if mirror == hypr.MirrorNone {
 			f.monitors[i].mirrorOf = "none"
@@ -212,6 +217,18 @@ func (f *fakeHypr) mirrors(name string) string {
 		return ""
 	}
 	return f.monitors[i].mirrorOf
+}
+
+// mode reports the named output's mode as "WxH@R", "" if it does not exist.
+func (f *fakeHypr) mode(name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	i := f.find(name)
+	if i < 0 {
+		return ""
+	}
+	m := f.monitors[i]
+	return fmt.Sprintf("%dx%d@%g", m.width, m.height, m.refresh)
 }
 
 // created reports how many outputs the compositor was asked to create.
@@ -947,5 +964,30 @@ func TestGeometryCapsMirrorWithoutCreatingAnOutput(t *testing.T) {
 	}
 	if got := strings.Join(h.argvs[0], " "); !strings.Contains(got, "-max-size 2560x1440") {
 		t.Errorf("the helper was started without the cap:\n%s", got)
+	}
+}
+
+func TestExtendUsesTheConfiguredGeometry(t *testing.T) {
+	h := newHarness(t, readyOutput)
+	h.backend.Geometry = "2560x1440@60"
+
+	if err := h.backend.Start(context.Background(), device("tv", "TV"), session.ModeExtend); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := h.hypr.mode(hypr.OutputExtend); got != "2560x1440@60" {
+		t.Errorf("extend output is %q, want 2560x1440@60", got)
+	}
+}
+
+func TestExtendWithNoGeometryIsTheSameSizeAsEver(t *testing.T) {
+	h := newHarness(t, readyOutput)
+
+	if err := h.backend.Start(context.Background(), device("tv", "TV"), session.ModeExtend); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := h.hypr.mode(hypr.OutputExtend); got != "1920x1080@60" {
+		t.Errorf("extend output is %q, want 1920x1080@60", got)
 	}
 }

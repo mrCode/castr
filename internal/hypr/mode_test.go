@@ -82,3 +82,33 @@ func TestACorruptSavedModeIsIgnoredRatherThanApplied(t *testing.T) {
 		t.Errorf("applied %v from a corrupt file", got)
 	}
 }
+
+func TestTheOutputIsCreatedAtTheModeAskedFor(t *testing.T) {
+	f := newFake(panel())
+
+	if _, err := CreateOutput(f.run, OutputExtend, "", "2560x1440@120"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := f.monitor(OutputExtend)
+	if got.Width != 2560 || got.Height != 1440 || got.Refresh != 120 {
+		t.Errorf("output is %dx%d@%v, want 2560x1440@120", got.Width, got.Height, got.Refresh)
+	}
+}
+
+func TestNoModeMeansTheDefaultStreamGeometry(t *testing.T) {
+	if DefaultStreamGeometry != "1920x1080@60" {
+		t.Errorf("DefaultStreamGeometry = %q, want 1920x1080@60", DefaultStreamGeometry)
+	}
+	f := newFake(panel())
+	f.createAt = "1280x720@30" // so a mode that was never applied shows
+
+	if _, err := CreateOutput(f.run, OutputExtend, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	got := f.monitor(OutputExtend)
+	if got.Width != 1920 || got.Height != 1080 || got.Refresh != 60 {
+		t.Errorf("output is %dx%d@%v, want 1920x1080@60", got.Width, got.Height, got.Refresh)
+	}
+}

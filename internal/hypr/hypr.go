@@ -7,9 +7,10 @@
 // synthesised one at 60Hz -- and the user typed on a display four times slower
 // for the whole cast, blaming the network. The cast was fine.
 //
-// Instead we create a virtual 1920x1080 output. For extend it stands alone and
-// becomes a second desktop; for mirror it mirrors the panel. Either way the
-// panel keeps its own mode.
+// Instead we create a virtual output at the stream's size (1920x1080 unless
+// [capture] geometry says otherwise). For extend it stands alone and becomes a
+// second desktop; for mirror it mirrors the panel. Either way the panel keeps
+// its own mode.
 package hypr
 
 import (
@@ -30,8 +31,6 @@ type Runner func(name string, args ...string) (string, error)
 const (
 	OutputExtend = "castr"
 	OutputMirror = "castr-mirror"
-
-	geometry = "1920x1080@60"
 )
 
 // ours lists the names castr creates, and therefore the only ones it may
@@ -97,15 +96,19 @@ func Focused(run Runner) (string, error) {
 	return monitors[0].Name, nil
 }
 
-// CreateOutput makes a virtual 1920x1080 output and returns the name Hyprland
-// actually used. mirrorOf, when set, makes it show that monitor's content.
+// CreateOutput makes a virtual output in mode ("WxH@R", DefaultStreamGeometry
+// when empty) and returns the name Hyprland actually used. mirrorOf, when set,
+// makes it show that monitor's content.
 //
 // Every failure after the output exists removes it again. Returning an error
-// while leaving it behind strands a 1920x1080 monitor on the user's desktop
-// *and* tells them nothing could be created -- wrong on both counts.
-func CreateOutput(run Runner, want, mirrorOf string) (string, error) {
+// while leaving it behind strands a monitor on the user's desktop *and* tells
+// them nothing could be created -- wrong on both counts.
+func CreateOutput(run Runner, want, mirrorOf, mode string) (string, error) {
 	if want == "" {
 		want = OutputExtend
+	}
+	if mode == "" {
+		mode = DefaultStreamGeometry
 	}
 
 	// An output of this name may already exist -- a leftover from a daemon that
@@ -129,7 +132,7 @@ func CreateOutput(run Runner, want, mirrorOf string) (string, error) {
 	}
 	_ = existing
 
-	if err := Apply(run, MonitorSpec{Output: name, Mode: geometry,
+	if err := Apply(run, MonitorSpec{Output: name, Mode: mode,
 		Position: "auto", Scale: 1, Mirror: mirrorOf}); err != nil {
 		// Created but not configured: unusable as a desktop, so do not leave it.
 		remove(run, name)
@@ -233,8 +236,9 @@ func resolveName(run Runner, want string) (string, error) {
 // on the desk forever stealing windows. Clearing the mirror makes it removable.
 func RemoveOutput(run Runner, name string) error {
 	// Best effort: an output that was never mirroring is already removable, and
-	// a failure here must not stop the removal itself.
-	_ = Apply(run, MonitorSpec{Output: name, Mode: geometry,
+	// a failure here must not stop the removal itself. The mode is only there
+	// because hl.monitor wants one; the output is about to go.
+	_ = Apply(run, MonitorSpec{Output: name, Mode: DefaultStreamGeometry,
 		Position: "auto", Scale: 1, Mirror: MirrorNone})
 
 	if err := mutate(run, "output", "remove", name); err != nil {
