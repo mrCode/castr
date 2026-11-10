@@ -436,10 +436,11 @@ func (f *fakePulse) run(name string, args ...string) (string, error) {
 		return b.String(), nil
 	case cmd == "--format=json list sink-inputs":
 		type in struct {
-			Index int     `json:"index"`
-			Sink  int     `json:"sink"`
-			Owner *string `json:"owner_module"`
-			Mute  bool    `json:"mute"`
+			Index int               `json:"index"`
+			Sink  int               `json:"sink"`
+			Owner *string           `json:"owner_module"`
+			Mute  bool              `json:"mute"`
+			Props map[string]string `json:"properties"`
 		}
 		out := []in{}
 		for _, i := range f.inputs {
@@ -448,7 +449,8 @@ func (f *fakePulse) run(name string, args ...string) (string, error) {
 				s := strconv.Itoa(i.owner)
 				owner = &s
 			}
-			out = append(out, in{Index: i.index, Sink: i.sink, Owner: owner, Mute: i.mute})
+			out = append(out, in{Index: i.index, Sink: i.sink, Owner: owner, Mute: i.mute,
+				Props: map[string]string{"application.name": "app-" + strconv.Itoa(i.index)}})
 		}
 		raw, _ := json.Marshal(out)
 		return string(raw), nil

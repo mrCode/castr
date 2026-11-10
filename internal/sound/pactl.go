@@ -95,6 +95,7 @@ type sinkInput struct {
 	index, sink int
 	owner       int // -1 for a stream no module owns: an app
 	mute        bool
+	app         string // its application.name
 }
 
 // sourceOutput is a stream recording from a source.
@@ -198,17 +199,19 @@ func listSinkInputs(run Runner) ([]sinkInput, error) {
 		return nil, err
 	}
 	var raw []struct {
-		Index int     `json:"index"`
-		Sink  int     `json:"sink"`
-		Owner *string `json:"owner_module"`
-		Mute  bool    `json:"mute"`
+		Index int               `json:"index"`
+		Sink  int               `json:"sink"`
+		Owner *string           `json:"owner_module"`
+		Mute  bool              `json:"mute"`
+		Props map[string]string `json:"properties"`
 	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		return nil, fmt.Errorf("parsing pactl's sink-inputs: %w", err)
 	}
 	inputs := make([]sinkInput, 0, len(raw))
 	for _, r := range raw {
-		inputs = append(inputs, sinkInput{index: r.Index, sink: r.Sink, owner: ownerID(r.Owner), mute: r.Mute})
+		inputs = append(inputs, sinkInput{index: r.Index, sink: r.Sink, owner: ownerID(r.Owner), mute: r.Mute,
+			app: r.Props["application.name"]})
 	}
 	return inputs, nil
 }
@@ -358,8 +361,8 @@ func moveSinkInput(run Runner, index int, sink string) error {
 // user's own loopback -- could feed back through castr, or into its own sink
 // when moved back. Streams on any other output stay where the user put
 // them. A stream that ends between the listing and the move is not an error
-// worth failing over.
-func moveAppsOnto(run Runner, target, from string) error {
+// worth failing over. Each move is logged with logf, when it is set.
+func moveAppsOnto(run Runner, target, from string, logf func(string, ...any)) error {
 	sinks, err := listSinks(run)
 	if err != nil {
 		return err
@@ -380,7 +383,9 @@ func moveAppsOnto(run Runner, target, from string) error {
 		if in.owner >= 0 || in.sink != fromID {
 			continue
 		}
-		_ = moveSinkInput(run, in.index, target)
+		if moveSinkInput(run, in.index, target) == nil && logf != nil {
+			logf("sound: moved stream %d (%s) from %s to %s", in.index, in.app, from, target)
+		}
 	}
 	return nil
 }

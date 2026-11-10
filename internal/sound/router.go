@@ -43,6 +43,9 @@ type Router struct {
 	// outputs (WirePlumberHistoryFile). It is only ever read. "" or a file
 	// that cannot be read leaves the stack unknown.
 	HistoryFile string
+	// Logf, when set, logs what castr does to the user's own streams
+	// (castrd -v), so a fight with WirePlumber over one shows.
+	Logf func(format string, args ...any)
 
 	casts      map[string]*cast
 	lastN      int // never reused within a process
@@ -84,7 +87,7 @@ func (r *Router) Attach(castID string) (string, error) {
 		}
 		// Only what plays on the default: a stream the user put on another
 		// output stays there, and is not sent to the TV.
-		if err := moveAppsOnto(r.run, mixSink, r.previous); err != nil {
+		if err := moveAppsOnto(r.run, mixSink, r.previous, r.Logf); err != nil {
 			return "", r.failAttach(first, err)
 		}
 	}
@@ -418,6 +421,8 @@ func (r *Router) Detach(castID string) error {
 //   - Every loopback stream muted or unmuted from outside -- in pavucontrol,
 //     or by a mute WirePlumber remembered -- is set back as the choices say.
 //   - A cast's capture moved off its cast's output is moved back.
+//   - An app stream that started on the laptop's output is moved into
+//     castr_mix.
 //
 // Only a castr_mix confirmed missing ends the routing: Follow then restores
 // and returns an error saying the routing was lost, and every cast has lost
@@ -442,7 +447,22 @@ func (r *Router) Follow() error {
 	}
 	// reconcile retries a loopback an earlier failure left out, and puts
 	// back a mute changed from outside.
-	return errors.Join(r.reconcile(), r.keepCaptures())
+	return errors.Join(r.reconcile(), r.keepCaptures(), r.pullApps())
+}
+
+// pullApps moves into castr_mix the app streams that started on the
+// laptop's output mid-cast. A new stream follows the default, castr_mix,
+// unless WirePlumber remembers a target for its app -- the output castr's
+// own restore moved it back to after an earlier cast, say -- and then it
+// plays on the laptop, not the TV. As when the routing began, only the
+// laptop's output is swept: a stream the user put on any other output
+// stays there, and no stream a module owns -- castr's own loopbacks among
+// them -- is ever moved.
+func (r *Router) pullApps() error {
+	if r.laptop == "" {
+		return nil
+	}
+	return moveAppsOnto(r.run, mixSink, r.laptop, r.Logf)
 }
 
 func (r *Router) follow(sinks []sink) error {
@@ -498,7 +518,7 @@ func (r *Router) follow(sinks []sink) error {
 		r.sweep = ""
 		return nil
 	}
-	if err := moveAppsOnto(r.run, mixSink, r.sweep); err != nil {
+	if err := moveAppsOnto(r.run, mixSink, r.sweep, r.Logf); err != nil {
 		return err
 	}
 	r.sweep = ""
@@ -659,7 +679,7 @@ func restore(run Runner, stateDir string, s savedState) error {
 	// streams to the session manager's fallback.
 	moveApps := func(target string) {
 		if _, ok := sinkID(present, mixSink); ok && target != "" {
-			errs = append(errs, moveAppsOnto(run, target, mixSink))
+			errs = append(errs, moveAppsOnto(run, target, mixSink, nil))
 		}
 	}
 	stack := s.Configured.Saved && s.SinkHistory != nil

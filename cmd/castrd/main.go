@@ -145,6 +145,7 @@ func run(idleTimeout time.Duration, verbose bool) error {
 	router := sound.NewRouter(execRunner, stateDir)
 	router.StartGuard = func() error { return sound.StartGuard(stateDir) }
 	router.HistoryFile = sound.WirePlumberHistoryFile()
+	router.Logf = log.Printf // shown with -v
 	d.Sound = router
 	// [airplay] audio predates Chromecast sound; "sound off" means off for
 	// every receiver, and castr then leaves the laptop's sound alone.
