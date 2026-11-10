@@ -95,8 +95,8 @@ func TestAttachLoadsEachLoopbackOnce(t *testing.T) {
 	f := newFakePulse()
 	r := NewRouter(f.run, t.TempDir())
 	mustAttach(t, r, "airplay:A")
-	if got := loopLoads(f.calls); !slices.Equal(got, []string{"castr_cast_1", realSink}) {
-		t.Errorf("the first attach loaded loopbacks into %v, want castr_cast_1 and %s", got, realSink)
+	if got := loopLoads(f.calls); !slices.Equal(got, []string{realSink, "castr_cast_1"}) {
+		t.Errorf("the first attach loaded loopbacks into %v, want %s, then castr_cast_1", got, realSink)
 	}
 	wantPlaying(t, f, map[string]bool{"castr_cast_1": true, realSink: false})
 
@@ -360,5 +360,47 @@ func TestFollowMovesACastsCaptureBackOntoItsOutput(t *testing.T) {
 	}
 	if c := f.changingCallsSince(n); len(c) != 0 {
 		t.Errorf("a second Follow changed things: %v", c)
+	}
+}
+
+func TestTheLaptopLoopbackIsMutedBeforeAnySoundReachesCastrMix(t *testing.T) {
+	// The laptop loopback starts unmuted. Loaded and muted before castr_mix
+	// is made the default and the apps are moved onto it, it has nothing to
+	// play on the laptop while it is unmuted, however late pactl lists it.
+	f := newFakePulse()
+	r := NewRouter(f.run, t.TempDir())
+	mustAttach(t, r, "airplay:A")
+
+	first := func(match func(c []string) bool) int {
+		for i, c := range f.calls {
+			if match(c) {
+				return i
+			}
+		}
+		return -1
+	}
+	laptopStream := func(c []string) bool {
+		idx, _ := strconv.Atoi(c[2])
+		return moduleArg(f.streamOwners[idx], "sink") == realSink
+	}
+	mute := first(func(c []string) bool {
+		return len(c) > 3 && c[1] == "set-sink-input-mute" && c[3] == "1" && laptopStream(c)
+	})
+	volume := first(func(c []string) bool { return len(c) > 2 && c[1] == "set-sink-input-volume" && laptopStream(c) })
+	move := first(func(c []string) bool { return len(c) > 3 && c[1] == "move-sink-input" && c[3] == "castr_mix" })
+	def := first(func(c []string) bool { return len(c) > 2 && c[1] == "set-default-sink" && c[2] == "castr_mix" })
+	if mute < 0 || volume < 0 || move < 0 || def < 0 {
+		t.Fatalf("calls missing: laptop mute %d, laptop volume %d, move onto castr_mix %d, default castr_mix %d", mute, volume, move, def)
+	}
+	if mute > move || volume > move {
+		t.Errorf("an app was moved onto castr_mix (call %d) before the laptop loopback was muted (%d) and set to 100%% (%d)", move, mute, volume)
+	}
+	if mute > def || volume > def {
+		t.Errorf("castr_mix was made the default (call %d) before the laptop loopback was muted (%d) and set to 100%% (%d)", def, mute, volume)
+	}
+	if !strings.Contains(strings.Join(f.calls[first(func(c []string) bool {
+		return len(c) > 2 && c[1] == "load-module" && c[2] == "module-loopback"
+	})], " "), "state.restore-props=false") {
+		t.Error("the laptop loopback lets WirePlumber restore its mute")
 	}
 }

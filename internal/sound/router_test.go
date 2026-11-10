@@ -419,7 +419,8 @@ func (f *fakePulse) run(name string, args ...string) (string, error) {
 				s := strconv.Itoa(o.owner)
 				owner = &s
 			}
-			props := map[string]string{"media.name": "capture"}
+			// As measured during a real cast: the helper's pulsesrc.
+			props := map[string]string{"application.name": "gst-launch-1.0", "media.name": "pulsesrc"}
 			if o.target != "" {
 				props["target.object"] = o.target
 			}

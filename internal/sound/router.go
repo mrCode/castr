@@ -166,6 +166,12 @@ func (r *Router) takeOver() error {
 	if err := fullAndUnmuted(r.run, mixSink); err != nil {
 		return err
 	}
+	// The laptop loopback starts unmuted. Loaded and muted while castr_mix
+	// is still empty -- before it is the default and before any app moves
+	// onto it -- it has nothing to play on the laptop meanwhile.
+	if err := r.reconcile(); err != nil {
+		return err
+	}
 	return setDefaultSink(r.run, mixSink)
 }
 
