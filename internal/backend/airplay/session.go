@@ -62,6 +62,11 @@ type Backend struct {
 
 	mu       sync.Mutex
 	sessions map[string]*castSession
+	// helpers counts, by mode, the casts that may have a helper using that
+	// mode's credentials file: from just before one spawns until its output
+	// ends. A session leaves sessions earlier than that -- Stop removes it
+	// before the helper has exited -- so sessions cannot answer this.
+	helpers map[string]int
 }
 
 type castSession struct {
@@ -96,6 +101,9 @@ type castSession struct {
 func (b *Backend) init() {
 	if b.sessions == nil {
 		b.sessions = map[string]*castSession{}
+	}
+	if b.helpers == nil {
+		b.helpers = map[string]int{}
 	}
 	if b.ReadyTimeout == 0 {
 		// Measured on real hardware: capture began 23s after session-ready,
@@ -139,7 +147,22 @@ func (b *Backend) Start(ctx context.Context, device discovery.Device, mode strin
 		return err
 	}
 
-	b.pullPairing(device, mode)
+	// Reserved before the pull and held until this helper's output ends, so a
+	// second cast starting in this mode meanwhile leaves the file alone.
+	b.mu.Lock()
+	b.init()
+	free := b.helpers[mode] == 0
+	b.helpers[mode]++
+	b.mu.Unlock()
+	spawned := false
+	defer func() {
+		if !spawned {
+			b.release(mode)
+		}
+	}()
+	if free {
+		b.pullPairing(device, mode)
+	}
 
 	credsPath, err := b.Creds(mode)
 	if err != nil {
@@ -157,6 +180,7 @@ func (b *Backend) Start(ctx context.Context, device discovery.Device, mode strin
 		return errors.New(msg)
 	}
 	cs.proc = proc
+	spawned = true // the pump releases the reservation when the output ends
 
 	b.mu.Lock()
 	b.init()
@@ -295,15 +319,24 @@ func (b *Backend) settle(cs *castSession, streaming bool) {
 }
 
 func (b *Backend) fail(ctx context.Context, cs *castSession, msg string) error {
-	b.settle(cs, false)
-
+	// Once a stop or a crash report owns the session, they tear it down and
+	// say what happened. A timeout firing while Stop was still waiting for the
+	// helper used to tear it down a second time, racing the first, and report
+	// a failure after the stop -- after the NEXT cast's connecting, when the
+	// stop was a restart, so a live cast showed as failed.
+	b.mu.Lock()
+	if cs.stopping || cs.crashed {
+		b.mu.Unlock()
+		return errors.New(msg)
+	}
+	cs.settled = true
+	cs.streaming = false
 	// Torn down WITHOUT going through Stop, and the distinction is the whole
 	// message. Stop announces idle, the daemon drops the session on it, and the
 	// Failed that followed then arrived for a device with no session -- dropped
 	// on the floor. A cast that timed out said nothing at all: no banner, no
 	// log line, no reason. Observed the first time a real cast timed out after
 	// the stopping/idle fix.
-	b.mu.Lock()
 	if b.sessions[cs.device.ID] == cs {
 		delete(b.sessions, cs.device.ID)
 	}
@@ -350,6 +383,7 @@ func (b *Backend) pump(cs *castSession) {
 	b.mu.Lock()
 	cs.exitedFlag = true
 	settled, streaming := cs.settled, cs.streaming
+	b.helpers[cs.mode]--
 	b.mu.Unlock()
 	close(cs.exited)
 
@@ -371,8 +405,23 @@ func (b *Backend) pump(cs *castSession) {
 	//
 	// Observed against a real Apple TV whose owner had turned pairing off, so
 	// the code never appeared and doubletake gave up on its own.
-	if !settled && cs.scan.NeedsPin() {
+	//
+	// Asked of the pin channel, not the scanner: the scanner keeps only the
+	// last 16KB, and a helper that logged more than that after its code had
+	// the prompt trimmed out of view -- so its exit went unreported and the
+	// cast sat in awaiting_pin with nothing left to end it.
+	if !settled && pinSeen(cs) {
 		b.failAfterPin(cs)
+	}
+}
+
+// pinSeen reports whether the child has ever asked for a code.
+func pinSeen(cs *castSession) bool {
+	select {
+	case <-cs.pin:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -525,39 +574,42 @@ func (b *Backend) awaitAfterPin(cs *castSession) {
 		return
 	}
 
+	// Checked and settled together, so a stop cannot slip in between.
 	b.mu.Lock()
-	gone := cs.stopping || cs.crashed
-	b.mu.Unlock()
-	if gone {
+	if cs.stopping || cs.crashed {
+		b.mu.Unlock()
 		return
 	}
-	b.settle(cs, true)
+	cs.settled = true
+	cs.streaming = true
+	exited := cs.exitedFlag
+	b.mu.Unlock()
+	if exited {
+		b.announceCrash(cs) // printed ready, then died: the pump left it to us
+		return
+	}
 	b.emit(cs.device, session.Streaming, "")
 }
 
 // pullPairing brings the other modes' pairings into mode's file, so a receiver
-// paired in one mode is not asked for a code in the other. A cast already
-// using that file -- one mirror among several -- is left alone: its helper
-// may be writing the file, and rewrites it from memory when it saves. A failed
-// pull costs at most a code typed again, so the cast goes on regardless.
+// paired in one mode is not asked for a code in the other. Start calls it only
+// while no other helper may be using that file (Backend.helpers): a running
+// helper may be writing it, and rewrites it from memory when it saves. A
+// failed pull costs at most a code typed again, so the cast goes on regardless.
 func (b *Backend) pullPairing(device discovery.Device, mode string) {
 	if b.PullPairing == nil {
-		return
-	}
-	b.mu.Lock()
-	inUse := false
-	for _, cs := range b.sessions {
-		if cs.mode == mode {
-			inUse = true
-		}
-	}
-	b.mu.Unlock()
-	if inUse {
 		return
 	}
 	if err := b.PullPairing(mode); err != nil {
 		log.Printf("%s: pairings from the other modes were not copied: %v", device.Name, err)
 	}
+}
+
+// release ends one cast's hold on its mode's credentials file.
+func (b *Backend) release(mode string) {
+	b.mu.Lock()
+	b.helpers[mode]--
+	b.mu.Unlock()
 }
 
 func (b *Backend) activeExtend() *castSession {

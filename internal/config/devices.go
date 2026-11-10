@@ -178,6 +178,17 @@ var identityFields = pairingFields[:3]
 // file's portal tokens, and returns the receivers it added. A receiver dst
 // already knows keeps dst's pairing unless src's supersedes it.
 func MergePairing(srcPath, dstPath string) ([]string, error) {
+	return mergePairing(srcPath, dstPath, false)
+}
+
+// mergePairing is MergePairing. With strict, a dst that exists but does not
+// parse is refused rather than taken for an empty file: mid-session a helper
+// may be rewriting it in place, and writing over a half-written file would
+// leave only src's entries -- dst's own tokens, and any pairing made only
+// there, gone. MergePairing stays lenient because it runs when no helper does
+// (castrd's start, migration), where such a file really is damaged; the
+// helper refuses to start on it, and replacing it is the repair.
+func mergePairing(srcPath, dstPath string, strict bool) ([]string, error) {
 	src, err := readCreds(srcPath)
 	if err != nil || len(src) == 0 {
 		return nil, err
@@ -185,6 +196,11 @@ func MergePairing(srcPath, dstPath string) ([]string, error) {
 	dst, err := readCreds(dstPath)
 	if err != nil {
 		return nil, err
+	}
+	if dst == nil && strict {
+		if _, statErr := os.Stat(dstPath); statErr == nil {
+			return nil, fmt.Errorf("%s is unreadable or half written; left alone", dstPath)
+		}
 	}
 	if dst == nil {
 		dst = map[string]map[string]any{}
@@ -381,7 +397,7 @@ func PullPairing(stateDir, mode string, modes []string) error {
 		if from == mode {
 			continue
 		}
-		if _, err := MergePairing(CredsPath(stateDir, from), CredsPath(stateDir, mode)); err != nil {
+		if _, err := mergePairing(CredsPath(stateDir, from), CredsPath(stateDir, mode), true); err != nil {
 			return err
 		}
 	}
@@ -422,6 +438,12 @@ func writeCreds(path string, creds map[string]map[string]any) error {
 	}
 	defer os.Remove(tmp.Name()) // a no-op once renamed
 	if _, err := tmp.Write(append(raw, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	// On disk before the rename, or a power cut can leave the new name on an
+	// empty file -- read as no pairings, so every receiver asks for its code.
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return err
 	}

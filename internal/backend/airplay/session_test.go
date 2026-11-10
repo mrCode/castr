@@ -32,6 +32,12 @@ type fakeProc struct {
 	// real helper starts capture only after it is given the code.
 	afterWrite []string
 	wake       chan struct{}
+	// exitAfterWrite makes the child exit once afterWrite has been printed.
+	exitAfterWrite bool
+	// terminateDelay makes Terminate slow, the way a real helper takes a
+	// moment to shut its capture pipelines down.
+	terminateDelay time.Duration
+	terminations   int
 }
 
 func (p *fakeProc) Read(b []byte) (int, error) {
@@ -64,6 +70,9 @@ func (p *fakeProc) Write(b []byte) (int, error) {
 	if len(p.afterWrite) > 0 {
 		p.chunks = append(p.chunks, p.afterWrite...)
 		p.afterWrite = nil
+		if p.exitAfterWrite {
+			p.exits = true
+		}
 		select {
 		case p.wake <- struct{}{}:
 		default:
@@ -73,6 +82,12 @@ func (p *fakeProc) Write(b []byte) (int, error) {
 }
 
 func (p *fakeProc) Terminate() error {
+	p.mu.Lock()
+	delay := p.terminateDelay
+	p.terminations++
+	p.mu.Unlock()
+	time.Sleep(delay)
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.terminated = true
@@ -277,7 +292,11 @@ type harness struct {
 	childExits bool
 	// afterPin is what spawned children print once given a code.
 	afterPin []string
-	mu       sync.Mutex
+	// afterPinExits makes them exit after printing it.
+	afterPinExits bool
+	// terminateDelay slows every child's Terminate.
+	terminateDelay time.Duration
+	mu             sync.Mutex
 }
 
 func newHarness(t *testing.T, chunks ...string) *harness {
@@ -298,6 +317,7 @@ func newHarness(t *testing.T, chunks ...string) *harness {
 		Spawn: func(_ context.Context, argv []string) (Process, error) {
 			h.mu.Lock()
 			exits, afterPin := h.childExits, h.afterPin
+			afterPinExits, delay := h.afterPinExits, h.terminateDelay
 			h.mu.Unlock()
 			p := &fakeProc{
 				chunks:     append([]string{}, chunks...),
@@ -305,6 +325,9 @@ func newHarness(t *testing.T, chunks ...string) *harness {
 				done:       make(chan struct{}),
 				afterWrite: append([]string{}, afterPin...),
 				wake:       make(chan struct{}, 1),
+
+				exitAfterWrite: afterPinExits,
+				terminateDelay: delay,
 			}
 			h.mu.Lock()
 			h.procs = append(h.procs, p)
@@ -1078,8 +1101,51 @@ func TestAModeAnotherCastIsUsingIsNotPulledInto(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-
 	if want := "pull mirror, spawn, spawn, spawn"; p.got() != want {
+		t.Errorf("with a's mirror running: events = %q, want %q", p.got(), want)
+	}
+
+	// With a stopped, b is the only mirror -- and replacing it stops it
+	// first, so its file is free again.
+	if err := h.backend.Stop(ctx, device("a", "TV a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.backend.Start(ctx, device("b", "TV b"), session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	if want := "pull mirror, spawn, spawn, spawn, pull mirror, spawn"; p.got() != want {
+		t.Errorf("replacing the only mirror: events = %q, want %q", p.got(), want)
+	}
+}
+
+func TestTwoCastsStartingAtOnceInOneModePullOnlyOnce(t *testing.T) {
+	// The second start must not pull while the first one's helper is already
+	// running but not yet registered: that helper may be writing the file.
+	h := newHarness(t, readyOutput)
+	p := &pulls{}
+	p.hook(h)
+	ctx := context.Background()
+	spawn := h.backend.Spawn
+	var nested bool
+	var inner error
+	h.backend.Spawn = func(ctx context.Context, argv []string) (Process, error) {
+		proc, err := spawn(ctx, argv)
+		// Helper a is running; its session is not registered yet. Called
+		// again from inside, for b, nested is already set.
+		if !nested {
+			nested = true
+			inner = h.backend.Start(ctx, device("b", "Two"), session.ModeMirror)
+		}
+		return proc, err
+	}
+
+	if err := h.backend.Start(ctx, device("a", "One"), session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	if inner != nil {
+		t.Fatal(inner)
+	}
+	if want := "pull mirror, spawn, spawn"; p.got() != want {
 		t.Errorf("events = %q, want %q", p.got(), want)
 	}
 }
@@ -1169,5 +1235,65 @@ func TestACastThatTookItsCodeButNeverStartsFailsInTheEnd(t *testing.T) {
 	}
 	if !h.procs[0].wasTerminated() {
 		t.Error("the stuck helper was left running")
+	}
+}
+
+func TestAHelperThatExitsAfterAChattyPairingFailsTheCast(t *testing.T) {
+	// The scanner keeps only the last 16KB of output. A helper that logged
+	// more than that after its code and then died left the prompt trimmed out
+	// of view -- and nothing reported the exit: the cast sat in awaiting_pin,
+	// and extend's output was left behind.
+	h := newHarness(t, "pairing required. "+PinPrompt+": ")
+	for i := 0; i < 2000; i++ { // 32KB, a line at a time
+		h.afterPin = append(h.afterPin, "rtsp: SETUP ...\n")
+	}
+	h.afterPinExits = true
+	ctx := context.Background()
+	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeExtend); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.backend.SubmitPin(ctx, device("a", "TV"), "1234"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !eventually(func() bool { return h.sawState(session.Failed) }) {
+		t.Fatalf("states = %v, want failed once the helper exited", h.states)
+	}
+	if h.hypr.has(hypr.OutputExtend) {
+		t.Error("the extend output was left behind")
+	}
+	if err := h.backend.Stop(ctx, device("a", "TV")); !errors.Is(err, errNoSession) {
+		t.Errorf("Stop after the failure = %v, want no session left", err)
+	}
+}
+
+func TestAStopDuringTheWaitAfterACodeIsNotAlsoAFailure(t *testing.T) {
+	// The user sees nothing for a while and presses stop, and the ready
+	// timeout fires while the helper is shutting down. That tore the cast
+	// down twice and reported a failure after the stop -- after the NEXT
+	// cast's connecting, when the stop was a restart.
+	h := newHarness(t, "pairing required. "+PinPrompt+": ")
+	h.terminateDelay = 150 * time.Millisecond
+	ctx := context.Background()
+	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeExtend); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.backend.SubmitPin(ctx, device("a", "TV"), "1234"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if err := h.backend.Stop(ctx, device("a", "TV")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond) // past the ready timeout
+
+	if h.sawState(session.Failed) {
+		t.Errorf("states = %v: a deliberate stop was also reported as a failure", h.states)
+	}
+	h.procs[0].mu.Lock()
+	n := h.procs[0].terminations
+	h.procs[0].mu.Unlock()
+	if n != 1 {
+		t.Errorf("the helper was terminated %d times, want once", n)
 	}
 }

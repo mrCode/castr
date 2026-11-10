@@ -1063,3 +1063,42 @@ func TestWritingCredentialsLeavesNoTemporaryFileBehind(t *testing.T) {
 		t.Errorf("extend.json mode = %v, want 0600: it holds private keys", info.Mode().Perm())
 	}
 }
+
+func TestPullingIntoAnUnreadableFileLeavesItAlone(t *testing.T) {
+	// A helper rewrites its file in place, so castr can catch it half
+	// written. Taking that for "no pairings" replaced the file with the other
+	// mode's entries alone: this mode's tokens, and any pairing made only
+	// here, were gone.
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), pairedTV)
+	half := `{"11:22:33:44:55:66":{"pairing_id":"id-2","ed25519_pub`
+	putCreds(t, CredsPath(dir, "extend"), half)
+
+	if err := PullPairing(dir, "extend", []string{"mirror", "extend"}); err == nil {
+		t.Error("pulling into a half-written file reported success")
+	}
+	raw, err := os.ReadFile(CredsPath(dir, "extend"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != half {
+		t.Errorf("the half-written file was replaced:\n%s", raw)
+	}
+}
+
+func TestSyncingAtStartStillReplacesADamagedFile(t *testing.T) {
+	// When castrd starts no helper runs, so a file that does not parse really
+	// is damaged -- and the helper refuses to start on it. Replacing it with
+	// the other mode's pairings is the repair; only the mid-session pull is
+	// strict.
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), pairedTV)
+	putCreds(t, CredsPath(dir, "extend"), `{"half`)
+
+	if err := SyncPairing(dir, []string{"mirror", "extend"}); err != nil {
+		t.Fatal(err)
+	}
+	if readCredsMap(t, CredsPath(dir, "extend"))["AA:BB:CC:DD:EE:FF"]["ed25519_seed"] != "seed-1" {
+		t.Error("the damaged extend file was not repaired at start")
+	}
+}
