@@ -73,6 +73,34 @@
 > the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
 > (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
 > gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
+> **2026-11-10: the sound feature passes on the office Apple TV** (branch
+> feature/sound-output, test package 0.3.0.6, helper = doubletake `castr`
+> HEAD). Each cast chooses TV / Laptop / Both from the widget's SOUND section
+> or with `castr sound`.
+> Checked: the choices, volume keys, lip sync, Bluetooth headphones mid-cast,
+> and the restore after the cast (default output, configured default,
+> WirePlumber's history, no stored app targets).
+> Bugs found on hardware and fixed:
+> - Each switch re-linked loopbacks and added delay that never drained
+>   (source-age 11 → 96 ms against a 100 ms budget, then robotic or silent
+>   TV sound). Switching now only mutes.
+> - Apps that start mid-cast bypassed castr_mix. Follow now pulls them in.
+> - castr's `pactl move-sink-input` made WirePlumber store a target per app
+>   (Firefox was pinned to the speakers). Streams now follow the default by
+>   clearing target.object and target.node.
+> - WirePlumber's output history was reordered. It is now rebuilt exactly.
+> - The helper and capture kept running after castrd died. Pdeathsig fixes
+>   it.
+> - The 100 ms sound budget is tight on busy Wi-Fi. This was there before
+>   the routing too: castr's routing and a direct capture both glitched
+>   slightly, while 150 and 200 were almost clean. With target_latency_ms
+>   unset, castr now uses 100 for casts without sound and 150 for casts with
+>   sound. A set value overrides both.
+> The user's config leaves target_latency_ms unset.
+> Release blockers: tag castr-airplay-2 (the helper's -audio-source flag;
+> castr-airplay-1 lacks it), PKGBUILD _airplay plus sums, plugin 1.4.0 (the
+> widget's SOUND section), and #11503 only after 1.3.0 is verified.
+>
 > **2026-11-10: issue #3 (@diegosoares) — configurable extend geometry + codec.**
 > Asks for `[capture] geometry` (default 1920x1080@60, or "auto" for the
 > receiver's canvas), `[capture] codec = auto|h264|hevc` forwarded as
