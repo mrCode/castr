@@ -27,30 +27,48 @@ type fakeProc struct {
 	done       chan struct{}
 	terminated bool
 	written    []byte
+
+	// afterWrite is printed once something is written to stdin -- the way a
+	// real helper starts capture only after it is given the code.
+	afterWrite []string
+	wake       chan struct{}
 }
 
 func (p *fakeProc) Read(b []byte) (int, error) {
-	p.mu.Lock()
-	if len(p.chunks) > 0 {
-		c := p.chunks[0]
-		p.chunks = p.chunks[1:]
+	for {
+		p.mu.Lock()
+		if len(p.chunks) > 0 {
+			c := p.chunks[0]
+			p.chunks = p.chunks[1:]
+			p.mu.Unlock()
+			return copy(b, c), nil
+		}
+		exits, done, wake := p.exits, p.done, p.wake
 		p.mu.Unlock()
-		return copy(b, c), nil
-	}
-	exits, done := p.exits, p.done
-	p.mu.Unlock()
 
-	if exits {
-		return 0, io.EOF
+		if exits {
+			return 0, io.EOF
+		}
+		select {
+		case <-done:
+			return 0, io.EOF
+		case <-wake: // a nil wake never fires
+		}
 	}
-	<-done
-	return 0, io.EOF
 }
 
 func (p *fakeProc) Write(b []byte) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.written = append(p.written, b...)
+	if len(p.afterWrite) > 0 {
+		p.chunks = append(p.chunks, p.afterWrite...)
+		p.afterWrite = nil
+		select {
+		case p.wake <- struct{}{}:
+		default:
+		}
+	}
 	return len(b), nil
 }
 
@@ -257,7 +275,9 @@ type harness struct {
 
 	// childExits makes spawned children hit EOF once their script runs out.
 	childExits bool
-	mu         sync.Mutex
+	// afterPin is what spawned children print once given a code.
+	afterPin []string
+	mu       sync.Mutex
 }
 
 func newHarness(t *testing.T, chunks ...string) *harness {
@@ -277,12 +297,14 @@ func newHarness(t *testing.T, chunks ...string) *harness {
 		},
 		Spawn: func(_ context.Context, argv []string) (Process, error) {
 			h.mu.Lock()
-			exits := h.childExits
+			exits, afterPin := h.childExits, h.afterPin
 			h.mu.Unlock()
 			p := &fakeProc{
-				chunks: append([]string{}, chunks...),
-				exits:  exits,
-				done:   make(chan struct{}),
+				chunks:     append([]string{}, chunks...),
+				exits:      exits,
+				done:       make(chan struct{}),
+				afterWrite: append([]string{}, afterPin...),
+				wake:       make(chan struct{}, 1),
 			}
 			h.mu.Lock()
 			h.procs = append(h.procs, p)
@@ -1074,5 +1096,78 @@ func TestAFailedPullDoesNotStopTheCast(t *testing.T) {
 	}
 	if !h.sawState(session.Streaming) {
 		t.Error("the cast never reached streaming")
+	}
+}
+
+// eventually polls cond for up to a second.
+func eventually(cond func() bool) bool {
+	for i := 0; i < 100; i++ {
+		if cond() {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return cond()
+}
+
+func (h *harness) count(want session.State) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, s := range h.states {
+		if s == string(want) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestACastThatTookItsCodeIsReportedStreamingOnceCaptureStarts(t *testing.T) {
+	// Seen against a stand-in receiver: the code was taken and the receiver
+	// got video for a minute, while castr reported awaiting_pin the whole
+	// time. SubmitPin waited again, found the prompt it had already seen, and
+	// stopped there; nothing else ever reported streaming.
+	h := newHarness(t, "pairing required. "+PinPrompt+": ")
+	h.afterPin = []string{readyOutput}
+	ctx := context.Background()
+	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	if !h.sawState(session.AwaitingPin) {
+		t.Fatal("the cast never asked for its code")
+	}
+
+	if err := h.backend.SubmitPin(ctx, device("a", "TV"), "1234"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !eventually(func() bool { return h.sawState(session.Streaming) }) {
+		t.Fatalf("states = %v, want streaming once capture started", h.states)
+	}
+	// A second code sent by an impatient user must not report it twice.
+	_ = h.backend.SubmitPin(ctx, device("a", "TV"), "1234")
+	time.Sleep(50 * time.Millisecond)
+	if n := h.count(session.Streaming); n != 1 {
+		t.Errorf("streaming reported %d times, want once", n)
+	}
+}
+
+func TestACastThatTookItsCodeButNeverStartsFailsInTheEnd(t *testing.T) {
+	// The same wait that reports streaming also gives up: otherwise a helper
+	// stuck after the code would sit in awaiting_pin forever.
+	h := newHarness(t, "pairing required. "+PinPrompt+": ")
+	ctx := context.Background()
+	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.backend.SubmitPin(ctx, device("a", "TV"), "1234"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !eventually(func() bool { return h.sawState(session.Failed) }) {
+		t.Fatalf("states = %v, want failed after the ready timeout", h.states)
+	}
+	if !h.procs[0].wasTerminated() {
+		t.Error("the stuck helper was left running")
 	}
 }

@@ -89,6 +89,8 @@ type castSession struct {
 	pin    chan struct{}
 	exited chan struct{}
 	once   sync.Once
+	// afterPin starts the one wait that follows the code (awaitAfterPin).
+	afterPin sync.Once
 }
 
 func (b *Backend) init() {
@@ -360,8 +362,9 @@ func (b *Backend) pump(cs *castSession) {
 		return
 	}
 
-	// A child that dies while waiting for a PIN is the exception: awaitReady
-	// already RETURNED at the pin prompt, so nobody else owns the outcome.
+	// A child that dies while waiting for a PIN, or after taking one, is the
+	// exception: awaitReady already RETURNED at the pin prompt, and
+	// awaitAfterPin leaves an exit to this side, so nobody else owns it.
 	// Without this the session sits in awaiting_pin forever -- the bar shows a
 	// cast that is connecting, `stop` finds nothing to stop, and submitting the
 	// code answers "no active session" for a session the daemon is listing.
@@ -495,7 +498,41 @@ func (b *Backend) SubmitPin(ctx context.Context, device discovery.Device, pin st
 	if _, err := cs.proc.Write([]byte(pin + "\n")); err != nil {
 		return fmt.Errorf("sending PIN: %w", err)
 	}
-	return b.awaitReady(ctx, cs)
+	// Answered as soon as the code is sent; the status shows what happens
+	// next. Waiting here for capture would hold `castr pin`, and the widget's
+	// code field, for as long as ready_timeout -- past the client's own limit.
+	cs.afterPin.Do(func() { go b.awaitAfterPin(cs) })
+	return nil
+}
+
+// awaitAfterPin reports a cast that took its code once capture starts, or
+// fails it after ReadyTimeout. Without it nothing did: SubmitPin used to wait
+// again, found the prompt it had already seen, and the session sat in
+// awaiting_pin for as long as it cast. Found against a stand-in receiver that
+// was getting video the whole time.
+func (b *Backend) awaitAfterPin(cs *castSession) {
+	timer := time.NewTimer(b.ReadyTimeout)
+	defer timer.Stop()
+
+	select {
+	case <-cs.ready:
+	case <-cs.exited:
+		// The pump reports a helper that died after its code (failAfterPin),
+		// and a deliberate stop reports itself.
+		return
+	case <-timer.C:
+		_ = b.fail(context.Background(), cs, b.failureMessage(cs, false))
+		return
+	}
+
+	b.mu.Lock()
+	gone := cs.stopping || cs.crashed
+	b.mu.Unlock()
+	if gone {
+		return
+	}
+	b.settle(cs, true)
+	b.emit(cs.device, session.Streaming, "")
 }
 
 // pullPairing brings the other modes' pairings into mode's file, so a receiver
