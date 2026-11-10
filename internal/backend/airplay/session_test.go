@@ -1352,8 +1352,8 @@ func TestAReceiverMarkedToPairAgainIsCastToWithPair(t *testing.T) {
 	} {
 		h := newHarness(t, readyOutput)
 		var cleared []string
-		h.backend.PairAgain = func(got discovery.Device) (string, bool) {
-			return "FE:5C:81:22:50:38", got.ID == d.ID
+		h.backend.PairAgain = func(got discovery.Device, _ string) (string, bool, error) {
+			return "FE:5C:81:22:50:38", got.ID == d.ID, nil
 		}
 		h.backend.PairedAgain = func(id string) { cleared = append(cleared, id) }
 
@@ -1375,7 +1375,9 @@ func TestAFailedPairAgainKeepsTheMark(t *testing.T) {
 	h := newHarness(t, refusals["unproven"])
 	h.childExits = true
 	cleared := 0
-	h.backend.PairAgain = func(discovery.Device) (string, bool) { return "FE:5C:81:22:50:38", true }
+	h.backend.PairAgain = func(discovery.Device, string) (string, bool, error) {
+		return "FE:5C:81:22:50:38", true, nil
+	}
 	h.backend.PairedAgain = func(string) { cleared++ }
 
 	_ = h.backend.Start(context.Background(), device("airplay:FE:5C:81:22:50:38", "Office"), session.ModeMirror)
@@ -1386,7 +1388,7 @@ func TestAFailedPairAgainKeepsTheMark(t *testing.T) {
 
 func TestAnUnmarkedReceiverIsCastToWithoutPair(t *testing.T) {
 	h := newHarness(t, readyOutput)
-	h.backend.PairAgain = func(discovery.Device) (string, bool) { return "", false }
+	h.backend.PairAgain = func(discovery.Device, string) (string, bool, error) { return "", false, nil }
 	if err := h.backend.Start(context.Background(), device("airplay:FE:5C:81:22:50:38", "Office"), session.ModeMirror); err != nil {
 		t.Fatal(err)
 	}
@@ -1402,5 +1404,33 @@ func TestThePairingPasswordPromptIsRecognised(t *testing.T) {
 	s.Absorb("Enter the receiver's pairing password: ")
 	if !s.NeedsPin() {
 		t.Error("the pairing password prompt was not taken for a code prompt")
+	}
+}
+
+func TestAPairAgainWithNoCodePairingInItsModeIsRefused(t *testing.T) {
+	// The helper reads only its own mode's file. With -pair and no code
+	// pairing there, it would pair as the device at the address advertises.
+	h := newHarness(t, readyOutput)
+	var gotMode string
+	h.backend.PairAgain = func(_ discovery.Device, mode string) (string, bool, error) {
+		gotMode = mode
+		return "", true, errors.New("no code pairing in extend")
+	}
+
+	err := h.backend.Start(context.Background(), device("airplay:FE:5C:81:22:50:38", "Office"), session.ModeExtend)
+	if err == nil {
+		t.Fatal("the cast went ahead")
+	}
+	if gotMode != session.ModeExtend {
+		t.Errorf("checked mode %q, want the cast's own", gotMode)
+	}
+	if len(h.procs) != 0 {
+		t.Error("a helper was started")
+	}
+	if h.hypr.has(hypr.OutputExtend) {
+		t.Error("the extend output was left behind")
+	}
+	if !h.sawState(session.Failed) {
+		t.Error("the refusal was not reported")
 	}
 }

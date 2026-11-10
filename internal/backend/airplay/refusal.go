@@ -3,6 +3,7 @@ package airplay
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/mrCode/castr/internal/discovery"
@@ -81,14 +82,17 @@ func (s *Scanner) Refusal() (refusal, string) {
 	return refusalNone, ""
 }
 
+var logStamp = regexp.MustCompile(`\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} `)
+
 // refusalReason is a refusal line without its log timestamp or its advice.
 func refusalReason(line string) string {
-	line = strings.TrimSpace(line)
 	// log's default prefix, which the helper keeps: "2026/11/10 20:10:42 ".
-	if f := strings.SplitN(line, " ", 3); len(f) == 3 && strings.Count(f[0], "/") == 2 &&
-		strings.Count(f[1], ":") == 2 {
-		line = f[2]
+	// It can follow a prompt printed without a newline, so the reason starts
+	// after the last one, wherever it is.
+	if loc := logStamp.FindAllStringIndex(line, -1); len(loc) > 0 {
+		line = line[loc[len(loc)-1][1]:]
 	}
+	line = strings.TrimSpace(line)
 	cut := len(line)
 	for _, m := range adviceMarkers {
 		if i := strings.Index(line, m); i >= 0 && i < cut {

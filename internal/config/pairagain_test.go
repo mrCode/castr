@@ -133,3 +133,18 @@ func TestClearingAMarkLeavesTheOthers(t *testing.T) {
 		t.Error("the file outlived its last mark")
 	}
 }
+
+func TestACodePairingIsLookedForInTheCastsOwnMode(t *testing.T) {
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), twoReceivers)
+
+	if !HasCodePairing(dir, "mirror", "fe:5c:81:22:50:38") {
+		t.Error("mirror's PIN pairing was not found")
+	}
+	if HasCodePairing(dir, "extend", "FE:5C:81:22:50:38") {
+		t.Error("a pairing only mirror holds was found for extend")
+	}
+	if HasCodePairing(dir, "mirror", "42:56:35:AF:76:0F") {
+		t.Error("a pairing made without a code counted")
+	}
+}

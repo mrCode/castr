@@ -531,3 +531,13 @@ func TestPairingAgainAdviceSaysWhenNotToEnterACode(t *testing.T) {
 		}
 	}
 }
+
+func TestAReasonAfterAPromptLosesThePromptAndTheTimestamp(t *testing.T) {
+	var s Scanner
+	s.Absorb("Enter the PIN shown on the receiver: 2026/11/10 20:10:50 pairing failed: " +
+		"receiver did not prove its pairing identity: pair-setup M6 carried no receiver identity\n")
+	_, reason := s.Refusal()
+	if !strings.HasPrefix(reason, "pairing failed:") {
+		t.Errorf("reason = %q", reason)
+	}
+}

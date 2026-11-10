@@ -61,8 +61,10 @@ type Backend struct {
 	PullPairing func(mode string) error
 	// PairAgain reports whether a receiver is marked to pair again (`castr
 	// pair-again`), and the device ID of the receiver it paired with. Its
-	// next cast then passes -pair and -device-id. Nil marks none.
-	PairAgain func(device discovery.Device) (deviceID string, ok bool)
+	// next cast then passes -pair and -device-id. An error refuses the cast:
+	// the mode's own file holds no code pairing to pair again with, and -pair
+	// would then pair as the device at the address advertises. Nil marks none.
+	PairAgain func(device discovery.Device, mode string) (deviceID string, ok bool, err error)
 	// PairedAgain clears a mark, once a cast that paired again is streaming.
 	PairedAgain func(deviceID string)
 
@@ -188,7 +190,13 @@ func (b *Backend) Start(ctx context.Context, device discovery.Device, mode strin
 	argv := BuildArgv(b.Config, device.ID, device.Address, device.Port, credsPath,
 		b.audioSource(device.ID))
 	if b.PairAgain != nil {
-		if id, ok := b.PairAgain(device); ok && id != "" {
+		id, ok, err := b.PairAgain(device, mode)
+		if err != nil {
+			b.undo(cs)
+			b.emit(device, session.Failed, err.Error())
+			return err
+		}
+		if ok && id != "" {
 			cs.pairAgain = id
 			argv = withPairAgain(argv, id)
 		}

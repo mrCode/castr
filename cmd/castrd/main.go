@@ -368,10 +368,18 @@ func newAirPlayBackend(cfg config.Config, stateDir string) *airplay.Backend {
 		PullPairing: func(mode string) error {
 			return config.PullPairing(stateDir, mode, session.Modes)
 		},
-		PairAgain: func(d discovery.Device) (string, bool) {
+		PairAgain: func(d discovery.Device, mode string) (string, bool, error) {
 			id, address := airplay.PairingKey(d)
 			mark, ok := config.PairAgainFor(stateDir, id, address)
-			return mark.DeviceID, ok
+			if !ok {
+				return "", false, nil
+			}
+			if !config.HasCodePairing(stateDir, mode, mark.DeviceID) {
+				return "", false, fmt.Errorf("castr cannot pair again with %s in %s mode yet: this "+
+					"mode holds no pairing with it made with a code to pair again with. Stop your "+
+					"other %s casts and try again, or cast in the other mode", d.Name, mode, mode)
+			}
+			return mark.DeviceID, true, nil
 		},
 		PairedAgain: func(id string) {
 			if err := config.ClearPairAgain(stateDir, id); err != nil {

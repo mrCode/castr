@@ -102,6 +102,28 @@ func MarkPairAgain(stateDir string, modes []string, target string) (PairAgainMar
 	return mark, writeMarks(stateDir, append(kept, mark))
 }
 
+// HasCodePairing reports whether one mode's file holds a pairing made with a
+// code for deviceID. castr-airplay reads only the file of the mode it casts in,
+// and with -pair it pairs again with that pairing's kind of code; without one
+// there, -pair pairs as at a first contact, as the device at the address
+// advertises -- after a password and no code, for a device that asks for one.
+// A cast that would pair again checks this first, since a mark is set from
+// any mode's file and the pull that copies pairings across can be skipped.
+func HasCodePairing(stateDir, mode, deviceID string) bool {
+	creds, err := readCreds(CredsPath(stateDir, mode))
+	if err != nil {
+		return false
+	}
+	for id, entry := range creds {
+		if !strings.EqualFold(id, deviceID) || !hasAll(entry, identityFields) {
+			continue
+		}
+		code, _ := entry["pairing_code"].(string)
+		return code == "pin" || code == "password"
+	}
+	return false
+}
+
 // PairAgainFor reports the mark for a receiver about to be cast to. One with a
 // device ID is matched by it alone, never by address: another receiver can
 // hold an address a marked one had. One without is matched by address.
