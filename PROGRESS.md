@@ -73,6 +73,39 @@
 > the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
 > (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
 > gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
+> **2026-11-10: pairing shared between modes mid-session** (branch
+> feature/pairing-sync, on top of feature/extend-geometry; commits 1e582cd,
+> 0c65617, 79fa29b, 76a83f2; not pushed). This is follow-up 2 from the 0.3.0 release.
+> - Each cast pulls the other modes' pairings into its own mode's file just
+>   before its helper starts. It skips the pull while another helper in that
+>   mode may be using the file (`Backend.helpers`), and refuses a destination
+>   it cannot parse. castrd's startup sync stays lenient: a file that won't
+>   parse there is really damaged, and replacing it repairs it. Credential
+>   files are now written to a temp file, fsynced and renamed.
+> - Found while testing it: after a code was entered, nothing ever reported
+>   streaming. Every cast that needed a code showed as `awaiting_pin` for as
+>   long as it ran (present since afa1383). `castr pin` now returns at once,
+>   and `awaitAfterPin` reports streaming or fails after ready_timeout.
+> - An independent review found five more problems, all fixed in 79fa29b: an
+>   exit hidden by the scanner's 16KB trim, a timeout racing Stop, concurrent
+>   same-mode pulls, a half-written destination, and no fsync.
+>   A second review found three more, fixed in 76a83f2: Stop returned before
+>   the helper's output ended, so a restart skipped its pull; two starts
+>   in one mode raced the pull; and a crash after the code was reported as
+>   a missing code. Not fixed: a Spawn that returns both a process and an
+>   error leaks the process; the real spawner never does that.
+> - Stand-in, isolated XDG_STATE_HOME/XDG_CONFIG_HOME with audio off, receiver
+>   `-auth pin -profile modern`:
+>   - this branch: mirror took the code and showed streaming after 4 s;
+>     extend then streamed with no code;
+>   - installed 0.3.0.6: mirror stuck in awaiting_pin, and extend asked again.
+> - Test-rig trap: test daemons share the real socket path in
+>   $XDG_RUNTIME_DIR. Between runs the widget restarts the real castrd, and
+>   the next test daemon then replaces its socket, orphaning it (unreachable,
+>   holding the lock; clients' spawns exit at once). Stop it with
+>   `castr quit` before each run, and check `/run/user/1000/castr/daemon.sock`
+>   exists afterwards.
+>
 > **2026-11-10: issue #3 built** (branch feature/extend-geometry, on top of
 > the sound branch; helper commits df7006d and 0737025, plus 3ff67de, which
 > reverts -print-canvas).
@@ -139,7 +172,8 @@
 > 1. Option to mute the laptop's output while casting (user asked).
 > 2. Sync pairings between modes right after a cast saves one, not only at
 >    castrd start: extend asked for the code again although mirror had just
->    paired.
+>    paired DONE on feature/pairing-sync
+>    (2026-11-10).
 > 3. castr shows the helper's refusals with advice castr users can't follow
 >    (`-pair`, editing the creds file). Map them to castr actions.
 > 4. Offer the clock fix (4ab072a) upstream as its own small PR.
