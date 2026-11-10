@@ -73,6 +73,32 @@
 > the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
 > (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
 > gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
+> **2026-11-10: the helper's refusals are explained in castr's terms**
+> (feature/pairing-sync: cf97c80, 561f480, plus the check after; not pushed).
+> - castr matches the helper's final line once it has exited, and gives
+>   castr advice in place of the helper's `-pair` / edit-the-file /
+>   `-no-encrypt` text.
+> - **`castr pair-again <id or address>`** writes a mark to
+>   state/castr/pair-again.json and touches no pairing file. The next cast
+>   passes `-pair -device-id <saved ID>`, and the mark clears once that cast
+>   streams. Only pairings made with a code can be marked, and the cast's own
+>   mode file must hold that code pairing, or the cast is refused.
+> - The first version was `castr unpair`, which forgot the pairing. A review
+>   showed it was UNSAFE: the next cast became a first contact, which an
+>   impostor asking for no code passes. A device that names itself as another
+>   receiver is never a reset TV, so it gets no pair-again advice.
+> - Stand-in: reset receiver refused, then marked. A different-ID device at
+>   the same address was still refused, and the mark was kept. The reset
+>   receiver then asked for a code and streamed; next cast needed no code.
+> - Known minors, not fixed:
+>   - the CLI and the daemon both rewrite the mark file, so one update can be
+>     lost (costs a refusal or one extra code, never safety);
+>   - a manual receiver paired before addresses were recorded can't be marked
+>     by address;
+>   - a password pair-again lets a device naming itself as the receiver try
+>     to crack the password offline. This is the helper's design, and the
+>     message warns about it.
+>
 > **2026-11-10: pairing shared between modes mid-session** (branch
 > feature/pairing-sync, on top of feature/extend-geometry; commits 1e582cd,
 > 0c65617, 79fa29b, 76a83f2; not pushed). This is follow-up 2 from the 0.3.0 release.
@@ -186,7 +212,8 @@
 >    paired DONE on feature/pairing-sync
 >    (2026-11-10).
 > 3. castr shows the helper's refusals with advice castr users can't follow
->    (`-pair`, editing the creds file). Map them to castr actions.
+>    (`-pair`, editing the creds file). Map them to castr actions. DONE on
+>    feature/pairing-sync (2026-11-10), as `castr pair-again`.
 > 4. Offer the clock fix (4ab072a) upstream as its own small PR.
 >
 > **2026-11-06: security review before release, and the fixes.** At the
