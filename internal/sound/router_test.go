@@ -35,7 +35,18 @@ type fakeInput struct {
 	owner       int // 0 for an app stream
 	mute        bool
 	volume      string
+	// target is the output an app stream is pinned to: by a move, or by a
+	// target WirePlumber stored for its app. "" for a stream that follows
+	// the default, as WirePlumber relinks it (linking.follow-default-target).
+	target string
+	// cleared holds which of target.object and target.node have been set
+	// to -1; both clear the target.
+	cleared map[string]bool
 }
+
+// nodeOf is a stream's object.id, its node id in PipeWire: not its pactl
+// index.
+func nodeOf(index int) int { return index + 10000 }
 
 // fakeOutput is a source-output: a stream recording from a source, such as
 // a receiver's capture of its cast's monitor.
@@ -141,10 +152,45 @@ func (f *fakePulse) addSink(name string, module int) {
 	f.sinks = append(f.sinks, fakeSink{id: f.id(), name: name, module: module})
 }
 
+// addApp starts an app stream on sink. On the default it follows the
+// default; anywhere else it is pinned there, as by the user or by a target
+// WirePlumber stored for its app.
 func (f *fakePulse) addApp(sink string) int {
 	idx := f.id()
-	f.inputs = append(f.inputs, fakeInput{index: idx, sink: f.sinkID(sink)})
+	in := fakeInput{index: idx, sink: f.sinkID(sink)}
+	if sink != f.def {
+		in.target = sink
+	}
+	f.inputs = append(f.inputs, in)
 	return idx
+}
+
+// relink puts each app stream where WirePlumber links it: on its target
+// while that exists, else on the default.
+func (f *fakePulse) relink() {
+	def := f.sinkID(f.def)
+	for i := range f.inputs {
+		in := &f.inputs[i]
+		if in.owner != 0 {
+			continue
+		}
+		if id := f.sinkID(in.target); in.target != "" && id >= 0 {
+			in.sink = id
+		} else if def >= 0 {
+			in.sink = def
+		}
+	}
+}
+
+// pinned returns the target of each app stream that has one, by index.
+func (f *fakePulse) pinned() map[int]string {
+	out := map[int]string{}
+	for _, i := range f.inputs {
+		if i.owner == 0 && i.target != "" {
+			out[i.index] = i.target
+		}
+	}
+	return out
 }
 
 func (f *fakePulse) sinkID(name string) int {
@@ -352,6 +398,26 @@ func (f *fakePulse) metadata(args []string) (string, error) {
 		f.deleteConfigured()
 		return found, nil
 	}
+	if len(args) == 7 && strings.Join(args[:3], " ") == "-n default --" && args[5] == "-1" && args[6] == "Spa:Id" &&
+		(args[4] == "target.object" || args[4] == "target.node") {
+		// Setting both keys to -1 deletes the stored target: the stream
+		// follows the default. Only one leaves it, as measured.
+		node, _ := strconv.Atoi(args[3])
+		for i := range f.inputs {
+			in := &f.inputs[i]
+			if nodeOf(in.index) != node {
+				continue
+			}
+			if in.cleared == nil {
+				in.cleared = map[string]bool{}
+			}
+			in.cleared[args[4]] = true
+			if in.cleared["target.object"] && in.cleared["target.node"] {
+				in.target, in.cleared = "", nil
+			}
+		}
+		return found, nil
+	}
 	if len(args) == 6 && strings.Join(args[:4], " ") == "-n default 0 "+key && args[5] == "Spa:String:JSON" {
 		var v struct {
 			Name string `json:"name"`
@@ -369,6 +435,8 @@ func (f *fakePulse) metadata(args []string) (string, error) {
 }
 
 func (f *fakePulse) run(name string, args ...string) (string, error) {
+	f.relink()
+	defer f.relink()
 	f.calls = append(f.calls, append([]string{name}, args...))
 	if name == "pw-metadata" {
 		return f.metadata(args)
@@ -450,7 +518,7 @@ func (f *fakePulse) run(name string, args ...string) (string, error) {
 				owner = &s
 			}
 			out = append(out, in{Index: i.index, Sink: i.sink, Owner: owner, Mute: i.mute,
-				Props: map[string]string{"application.name": "app-" + strconv.Itoa(i.index)}})
+				Props: map[string]string{"application.name": "app-" + strconv.Itoa(i.index), "object.id": strconv.Itoa(nodeOf(i.index))}})
 		}
 		raw, _ := json.Marshal(out)
 		return string(raw), nil
@@ -518,6 +586,9 @@ func (f *fakePulse) run(name string, args ...string) (string, error) {
 		for i := range f.inputs {
 			if f.inputs[i].index == idx {
 				f.inputs[i].sink = sink
+				if f.inputs[i].owner == 0 {
+					f.inputs[i].target = args[2] // WirePlumber stores it for the app
+				}
 				return "", nil
 			}
 		}
@@ -1879,7 +1950,7 @@ func TestACastrConfiguredDefaultLeftBehindIsNotPutBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range f.calls[n:] {
-		if c[0] == "pw-metadata" && isChanging(c) {
+		if c[0] == "pw-metadata" && isChanging(c) && slices.Contains(c, "default.configured.audio.sink") {
 			t.Errorf("restore ran %v, want the key left alone", c)
 		}
 	}

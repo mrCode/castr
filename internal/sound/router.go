@@ -53,7 +53,7 @@ type Router struct {
 	laptopLoop loopback // castr_mix -> the laptop, muted while the laptop is silent; none with no laptop output
 	previous   string   // the default before the first cast
 	laptop     string   // the output the laptop plays through now; "" for none
-	sweep      string   // an output whose app streams still need moving into castr_mix
+	sweep      string   // an output whose app streams still need letting follow the default, castr_mix
 	// configured is WirePlumber's configured default as it would be without
 	// castr; configuredSeen says whether that output was there at the last
 	// look, so Follow can tell when it appears.
@@ -84,11 +84,6 @@ func (r *Router) Attach(castID string) (string, error) {
 		}
 		if err := r.takeOver(); err != nil {
 			return "", errors.Join(err, r.restoreLocked())
-		}
-		// Only what plays on the default: a stream the user put on another
-		// output stays there, and is not sent to the TV.
-		if err := moveAppsOnto(r.run, mixSink, r.previous, r.Logf); err != nil {
-			return "", r.failAttach(first, err)
 		}
 	}
 
@@ -175,7 +170,17 @@ func (r *Router) takeOver() error {
 	if err := r.reconcile(); err != nil {
 		return err
 	}
-	return setDefaultSink(r.run, mixSink)
+	// Only what plays on the default follows it into castr_mix: a stream
+	// the user put on another output stays there, and is not sent to the
+	// TV. They are listed first, while it is still the default.
+	apps, err := appsOn(r.run, def)
+	if err != nil {
+		return err
+	}
+	if err := setDefaultSink(r.run, mixSink); err != nil {
+		return err
+	}
+	return releaseApps(r.run, apps, def, r.Logf)
 }
 
 // readHistory reads WirePlumber's stack of chosen outputs, made to agree
@@ -410,8 +415,8 @@ func (r *Router) Detach(castID string) error {
 // calls it every second while anything is attached.
 //   - When the default is no longer castr_mix, the user picked a new output:
 //     it becomes the laptop, the laptop loopback moves there, castr_mix is
-//     made the default again, and the app streams on the new output are
-//     moved into castr_mix.
+//     made the default again, and the app streams on the new output follow
+//     it into castr_mix.
 //   - When WirePlumber's configured default output appears -- Bluetooth
 //     headphones connect -- it becomes the laptop, as WirePlumber would have
 //     switched to it had castr_mix not been its configured default.
@@ -421,8 +426,8 @@ func (r *Router) Detach(castID string) error {
 //   - Every loopback stream muted or unmuted from outside -- in pavucontrol,
 //     or by a mute WirePlumber remembered -- is set back as the choices say.
 //   - A cast's capture moved off its cast's output is moved back.
-//   - An app stream that started on the laptop's output is moved into
-//     castr_mix.
+//   - An app stream that started on the laptop's output is let follow the
+//     default into castr_mix.
 //
 // Only a castr_mix confirmed missing ends the routing: Follow then restores
 // and returns an error saying the routing was lost, and every cast has lost
@@ -450,19 +455,17 @@ func (r *Router) Follow() error {
 	return errors.Join(r.reconcile(), r.keepCaptures(), r.pullApps())
 }
 
-// pullApps moves into castr_mix the app streams that started on the
-// laptop's output mid-cast. A new stream follows the default, castr_mix,
-// unless WirePlumber remembers a target for its app -- the output castr's
-// own restore moved it back to after an earlier cast, say -- and then it
-// plays on the laptop, not the TV. As when the routing began, only the
-// laptop's output is swept: a stream the user put on any other output
-// stays there, and no stream a module owns -- castr's own loopbacks among
-// them -- is ever moved.
+// pullApps lets the app streams that started on the laptop's output
+// mid-cast follow the default, castr_mix. A new stream follows it anyway,
+// unless WirePlumber stored a target for its app, and then it plays on the
+// laptop, not the TV. As when the routing began, only the laptop's output
+// is swept: a stream the user put on any other output stays there, and no
+// stream a module owns -- castr's own loopbacks among them -- is touched.
 func (r *Router) pullApps() error {
 	if r.laptop == "" {
 		return nil
 	}
-	return moveAppsOnto(r.run, mixSink, r.laptop, r.Logf)
+	return letAppsFollow(r.run, r.laptop, r.Logf)
 }
 
 func (r *Router) follow(sinks []sink) error {
@@ -513,12 +516,12 @@ func (r *Router) follow(sinks []sink) error {
 	if r.sweep == "" {
 		return nil
 	}
-	// Kept until it succeeds, so a failed move is retried on the next call.
+	// Kept until it succeeds, so a failed release is retried on the next call.
 	if _, ok := sinkID(sinks, r.sweep); !ok {
 		r.sweep = ""
 		return nil
 	}
-	if err := moveAppsOnto(r.run, mixSink, r.sweep, r.Logf); err != nil {
+	if err := letAppsFollow(r.run, r.sweep, r.Logf); err != nil {
 		return err
 	}
 	r.sweep = ""
@@ -637,17 +640,18 @@ func (r *Router) restoreLocked() error {
 // if pactl cannot list them, none is unloaded, and the next Recover sweeps
 // them. Every step runs even if an earlier one fails:
 //  1. unload the loopbacks, so nothing feeds castr's outputs;
-//  2. with WirePlumber's stack of chosen outputs known, move the app streams
-//     on castr_mix to the output WirePlumber will pick from it, then rebuild
-//     it exactly (writeSinkHistory), as it would be without castr;
+//  2. with WirePlumber's stack of chosen outputs known, rebuild it exactly
+//     (writeSinkHistory), as it would be without castr;
 //  3. without it, set the default to the laptop, the output the user was
 //     last using, or to previous if that is gone -- only ever to an output
 //     that still exists; with neither left, the session manager's own
-//     choice stands -- and move the app streams on castr_mix there;
-//  4. unload castr's outputs;
-//  5. without the stack, put WirePlumber's configured default back exactly,
-//     which step 2 overwrote: the same output, or no key at all;
-//  6. delete the state file -- only if every step worked, so that a failed
+//     choice stands;
+//  4. clear the targets of the app streams that were on castr_mix, so they
+//     follow whatever default WirePlumber picks, with nothing pinned;
+//  5. unload castr's outputs;
+//  6. without the stack, put WirePlumber's configured default back exactly,
+//     which step 3 overwrote: the same output, or no key at all;
+//  7. delete the state file -- only if every step worked, so that a failed
 //     restore is retried: by the daemon, by the guard, or by the next castrd.
 func restore(run Runner, stateDir string, s savedState) error {
 	var errs []error
@@ -675,42 +679,13 @@ func restore(run Runner, stateDir string, s savedState) error {
 		_, ok := sinkID(present, name)
 		return ok && name != "" && !isCastrName(name)
 	}
-	// With no real default to move to, unloading castr_mix below hands its
-	// streams to the session manager's fallback.
-	moveApps := func(target string) {
-		if _, ok := sinkID(present, mixSink); ok && target != "" {
-			errs = append(errs, moveAppsOnto(run, target, mixSink, nil))
-		}
-	}
+	// The app streams on castr_mix, listed while it is still the default.
+	apps, err := appsOn(run, mixSink)
+	errs = append(errs, err)
 	stack := s.Configured.Saved && s.SinkHistory != nil
 	if stack {
-		// WirePlumber will pick the first output in the stack that exists:
-		// its place in the stack outranks any priority. castr works that
-		// out rather than ask: WirePlumber handles each write after
-		// pw-metadata returns, so get-default-sink may still name an output
-		// an earlier write made the default for a moment. The apps move
-		// first, so they do not follow those moments around either.
-		target := ""
-		for _, want := range s.SinkHistory {
-			if usable(want) {
-				target = want
-				break
-			}
-		}
-		if target == "" {
-			if def, err := defaultSink(run); err == nil && usable(def) {
-				target = def
-			}
-		}
-		for _, want := range []string{s.LaptopSink, s.PreviousDefault} {
-			if target == "" && usable(want) {
-				target = want
-			}
-		}
-		moveApps(target)
 		errs = append(errs, writeSinkHistory(run, s.SinkHistory))
 	} else {
-		target := ""
 		for _, want := range []string{s.LaptopSink, s.PreviousDefault} {
 			if !usable(want) {
 				continue
@@ -719,16 +694,13 @@ func restore(run Runner, stateDir string, s savedState) error {
 				errs = append(errs, err)
 				continue
 			}
-			target = want
 			break
 		}
-		if target == "" {
-			if def, err := defaultSink(run); err == nil && def != "" && !isCastrName(def) {
-				target = def
-			}
-		}
-		moveApps(target)
 	}
+	// They follow whatever WirePlumber picks, so castr need not work it
+	// out, nor wait for it. One still on castr_mix when it goes falls to
+	// the default by itself.
+	errs = append(errs, releaseApps(run, apps, mixSink, nil))
 
 	for _, id := range sinks {
 		errs = append(errs, unloadModule(run, id))

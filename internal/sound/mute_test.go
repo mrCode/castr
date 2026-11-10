@@ -387,13 +387,15 @@ func TestTheLaptopLoopbackIsMutedBeforeAnySoundReachesCastrMix(t *testing.T) {
 		return len(c) > 3 && c[1] == "set-sink-input-mute" && c[3] == "1" && laptopStream(c)
 	})
 	volume := first(func(c []string) bool { return len(c) > 2 && c[1] == "set-sink-input-volume" && laptopStream(c) })
-	move := first(func(c []string) bool { return len(c) > 3 && c[1] == "move-sink-input" && c[3] == "castr_mix" })
+	// An app reaches castr_mix by following the default there once its
+	// target is cleared.
+	move := first(func(c []string) bool { return len(c) == 8 && c[0] == "pw-metadata" && c[3] == "--" })
 	def := first(func(c []string) bool { return len(c) > 2 && c[1] == "set-default-sink" && c[2] == "castr_mix" })
 	if mute < 0 || volume < 0 || move < 0 || def < 0 {
-		t.Fatalf("calls missing: laptop mute %d, laptop volume %d, move onto castr_mix %d, default castr_mix %d", mute, volume, move, def)
+		t.Fatalf("calls missing: laptop mute %d, laptop volume %d, first target cleared %d, default castr_mix %d", mute, volume, move, def)
 	}
 	if mute > move || volume > move {
-		t.Errorf("an app was moved onto castr_mix (call %d) before the laptop loopback was muted (%d) and set to 100%% (%d)", move, mute, volume)
+		t.Errorf("an app was let onto castr_mix (call %d) before the laptop loopback was muted (%d) and set to 100%% (%d)", move, mute, volume)
 	}
 	if mute > def || volume > def {
 		t.Errorf("castr_mix was made the default (call %d) before the laptop loopback was muted (%d) and set to 100%% (%d)", def, mute, volume)

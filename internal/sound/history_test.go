@@ -345,11 +345,11 @@ func TestWirePlumbersHistoryFileIsInTheStateDir(t *testing.T) {
 	}
 }
 
-func TestRestoreMovesTheAppsToWhereWirePlumberWillPlay(t *testing.T) {
+func TestRestoreLetsTheAppsFollowWhereWirePlumberWillPlay(t *testing.T) {
 	// WirePlumber picks the new default a moment after the writes, so
-	// pactl may still say castr_mix: the apps go to the first output in the
-	// stack that exists, which is what it will pick. Here that is the buds,
-	// which connected mid-cast, not the speakers the laptop played on.
+	// pactl may still say castr_mix. castr asks nothing: the apps' targets
+	// are cleared and they follow whatever WirePlumber picks -- here the
+	// buds, which connected mid-cast, not the speakers the laptop played on.
 	f := newFakePulse()
 	f.history = slices.Clone(before)
 	r := NewRouter(f.run, t.TempDir())
@@ -361,26 +361,33 @@ func TestRestoreMovesTheAppsToWhereWirePlumberWillPlay(t *testing.T) {
 	}
 	stale := "castr_mix\n"
 	f.defaultOut = &stale
+	apps := fakeAppsOn(f, "castr_mix")
 	n := len(f.calls)
 	if err := r.Detach("airplay:A"); err != nil {
 		t.Fatal(err)
 	}
-	moved := 0
-	for _, c := range f.calls[n:] {
-		if len(c) == 4 && c[1] == "move-sink-input" {
-			if c[3] != buds {
-				t.Errorf("restore ran %v, want the apps moved to %s", c, buds)
-			}
-			moved++
-		}
+	if len(apps) != 2 {
+		t.Fatalf("%d apps on castr_mix, want 2", len(apps))
 	}
-	if moved != 2 {
-		t.Errorf("moved %d app streams, want 2", moved)
+	for _, idx := range apps {
+		clearedBoth(t, f, f.calls[n:], idx)
 	}
+	noAppMoved(t, f)
 	historyIs(t, f, before)
 	if f.def != buds {
 		t.Errorf("default is %s, want %s", f.def, buds)
 	}
+	f.allAppsOn(t, buds)
+}
+
+func fakeAppsOn(f *fakePulse, sink string) []int {
+	var out []int
+	for _, i := range f.inputs {
+		if i.owner == 0 && i.sink == f.sinkID(sink) {
+			out = append(out, i.index)
+		}
+	}
+	return out
 }
 
 func TestShutdownFinishesARestoreThatFailed(t *testing.T) {
@@ -434,8 +441,8 @@ func TestTheAppsGoWhereWirePlumberPicksNotWhereItSaysMidWrite(t *testing.T) {
 	// write makes the speakers the default for a moment, and WirePlumber
 	// handles the writes after pw-metadata returns: get-default-sink can
 	// still say speakers when the last write has put the headphones on top.
-	// Or it names an output the user picked a moment ago, which the rebuild
-	// puts back under the headphones.
+	// Or it names an output the user picked a moment ago. The apps, their
+	// targets cleared, end where WirePlumber plays, never pinned anywhere.
 	speakers := realSink + "\n"
 	for name, stale := range map[string]func(f *fakePulse){
 		"one write behind":      func(f *fakePulse) { f.lagDefault = true },
@@ -452,30 +459,23 @@ func TestTheAppsGoWhereWirePlumberPicksNotWhereItSaysMidWrite(t *testing.T) {
 			r.HistoryFile = f.withStateFile(t)
 			mustAttach(t, r, "airplay:A")
 			stale(f)
+			apps := fakeAppsOn(f, "castr_mix")
 			n := len(f.calls)
 			if err := r.Detach("airplay:A"); err != nil {
 				t.Fatal(err)
 			}
-			moved, wrote := 0, false
-			for _, c := range f.calls[n:] {
-				wrote = wrote || c[0] == "pw-metadata" && isChanging(c)
-				if len(c) == 4 && c[1] == "move-sink-input" {
-					moved++
-					if wrote {
-						t.Errorf("restore ran %v after a write: the apps would follow the default around first", c)
-					}
-					if c[3] != jbl {
-						t.Errorf("restore ran %v, want the apps moved to %s", c, jbl)
-					}
-				}
+			for _, idx := range apps {
+				clearedBoth(t, f, f.calls[n:], idx)
 			}
-			if moved != 2 {
-				t.Errorf("moved %d app streams, want 2", moved)
+			noAppMoved(t, f)
+			if p := f.pinned(); len(p) != 0 {
+				t.Errorf("app streams left pinned: %v", p)
 			}
 			historyIs(t, f, before)
 			if f.def != jbl {
 				t.Errorf("default is %s, want %s", f.def, jbl)
 			}
+			f.allAppsOn(t, jbl)
 		})
 	}
 }

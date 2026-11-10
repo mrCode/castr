@@ -40,6 +40,9 @@ func TestFollowPullsAppsThatStartMidCastIntoCastrMix(t *testing.T) {
 	if got := appOn(t, f, video); got != "castr_mix" {
 		t.Errorf("the app that started on the laptop output is on %s, want castr_mix", got)
 	}
+	clearedBoth(t, f, f.calls, video)
+	untouched(t, f, f.calls, call)
+	noAppMoved(t, f)
 	if got := appOn(t, f, call); got != "headset" {
 		t.Errorf("the app the user put on the headset was moved to %s", got)
 	}

@@ -96,6 +96,7 @@ type sinkInput struct {
 	owner       int // -1 for a stream no module owns: an app
 	mute        bool
 	app         string // its application.name
+	node        int    // its object.id, the node's id in PipeWire; -1 if not given
 }
 
 // sourceOutput is a stream recording from a source.
@@ -210,8 +211,12 @@ func listSinkInputs(run Runner) ([]sinkInput, error) {
 	}
 	inputs := make([]sinkInput, 0, len(raw))
 	for _, r := range raw {
+		node, err := strconv.Atoi(r.Props["object.id"])
+		if err != nil {
+			node = -1
+		}
 		inputs = append(inputs, sinkInput{index: r.Index, sink: r.Sink, owner: ownerID(r.Owner), mute: r.Mute,
-			app: r.Props["application.name"]})
+			app: r.Props["application.name"], node: node})
 	}
 	return inputs, nil
 }
@@ -350,41 +355,77 @@ func setDefaultSink(run Runner, name string) error {
 	return err
 }
 
-func moveSinkInput(run Runner, index int, sink string) error {
-	_, err := pactl(run, "move-sink-input", strconv.Itoa(index), sink)
-	return err
-}
-
-// moveAppsOnto moves the app streams on from onto target. A stream a module
-// owns is never an app's and stays put: castr's own loopbacks would feed
-// castr_mix back into itself, and another module's -- a combine-sink's, the
-// user's own loopback -- could feed back through castr, or into its own sink
-// when moved back. Streams on any other output stay where the user put
-// them. A stream that ends between the listing and the move is not an error
-// worth failing over. Each move is logged with logf, when it is set.
-func moveAppsOnto(run Runner, target, from string, logf func(string, ...any)) error {
+// appsOn lists the app streams on from: those no module owns. A stream a
+// module owns is never an app's and is left alone: castr's own loopbacks
+// would feed castr_mix back into itself, and another module's -- a
+// combine-sink's, the user's own loopback -- could feed back through castr.
+// Nothing is on an output that has gone.
+func appsOn(run Runner, from string) ([]sinkInput, error) {
 	sinks, err := listSinks(run)
 	if err != nil {
-		return err
-	}
-	targetID, ok := sinkID(sinks, target)
-	if !ok {
-		return fmt.Errorf("output %s is gone", target)
+		return nil, err
 	}
 	fromID, ok := sinkID(sinks, from)
-	if !ok || fromID == targetID {
-		return nil // nothing is on an output that has gone
+	if !ok {
+		return nil, nil
 	}
 	inputs, err := listSinkInputs(run)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var apps []sinkInput
 	for _, in := range inputs {
-		if in.owner >= 0 || in.sink != fromID {
+		if in.owner < 0 && in.sink == fromID {
+			apps = append(apps, in)
+		}
+	}
+	return apps, nil
+}
+
+// releaseApps lets each app stream follow the default output by clearing
+// its target, rather than moving it: pactl move-sink-input makes WirePlumber
+// store the output as the app's target (state-stream.lua), and every later
+// stream of that app plays there whatever the default -- a pin castr would
+// leave behind. Both target.object and target.node are set to -1: with only
+// target.object, the stored target survived (measured). WirePlumber then
+// forgets it, and relinks the stream to the default. Each is logged with
+// logf, when it is set.
+func releaseApps(run Runner, apps []sinkInput, from string, logf func(string, ...any)) error {
+	var errs []error
+	for _, in := range apps {
+		if in.node < 0 {
+			if logf != nil {
+				logf("sound: stream %d (%s) on %s has no node id to release", in.index, in.app, from)
+			}
 			continue
 		}
-		if moveSinkInput(run, in.index, target) == nil && logf != nil {
-			logf("sound: moved stream %d (%s) from %s to %s", in.index, in.app, from, target)
+		if err := clearTarget(run, in.node); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if logf != nil {
+			logf("sound: let stream %d (%s) on %s follow the default", in.index, in.app, from)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// letAppsFollow releases the app streams on from. Streams on any other
+// output stay where the user put them.
+func letAppsFollow(run Runner, from string, logf func(string, ...any)) error {
+	apps, err := appsOn(run, from)
+	if err != nil {
+		return err
+	}
+	return releaseApps(run, apps, from, logf)
+}
+
+// clearTarget unpins a stream: `pw-metadata -n default -- <node>
+// target.object -1 Spa:Id`, and the same for target.node.
+func clearTarget(run Runner, node int) error {
+	for _, key := range []string{"target.object", "target.node"} {
+		if _, err := pwMetadata(run, "--", strconv.Itoa(node), key, "-1", "Spa:Id"); err != nil {
+			return err
 		}
 	}
 	return nil
