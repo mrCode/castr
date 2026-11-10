@@ -66,12 +66,25 @@ var PinPrompts = []string{
 	"Enter the code shown on the receiver, or its configured password", // 0.5.0, late Digest challenge
 }
 
+// The latency castr picks when the user has not set target_latency_ms. The
+// value is a helper argument, so it is fixed when the cast starts.
+//
+// Measured on an Apple TV over busy office Wi-Fi: at 100 ms the TV's sound had
+// small glitches, at 150 it was almost clean (200 likewise). Without sound
+// there is nothing to glitch, so 100 is kept for responsiveness.
+const (
+	AutoLatencyNoSoundMS   = 100
+	AutoLatencyWithSoundMS = 150
+)
+
 // Config is the subset of castr's configuration doubletake needs.
 type Config struct {
-	PortRange       string
-	FPS             int
-	Encoder         string
-	Bitrate         int
+	PortRange string
+	FPS       int
+	Encoder   string
+	Bitrate   int
+	// TargetLatencyMS is the user's setting; 0 means not set, and BuildArgv
+	// then picks AutoLatencyNoSoundMS or AutoLatencyWithSoundMS by Audio.
 	TargetLatencyMS int
 	Audio           bool
 }
@@ -127,9 +140,14 @@ func BuildArgv(cfg Config, deviceID, address string, port int, credsPath, audioS
 	if cfg.Bitrate > 0 {
 		argv = append(argv, "-bitrate", strconv.Itoa(cfg.Bitrate))
 	}
-	if cfg.TargetLatencyMS > 0 {
-		argv = append(argv, "-target-latency-ms", strconv.Itoa(cfg.TargetLatencyMS))
+	latency := cfg.TargetLatencyMS
+	if latency <= 0 {
+		latency = AutoLatencyNoSoundMS
+		if cfg.Audio {
+			latency = AutoLatencyWithSoundMS
+		}
 	}
+	argv = append(argv, "-target-latency-ms", strconv.Itoa(latency))
 	if !cfg.Audio {
 		argv = append(argv, "-no-audio")
 	} else if audioSource != "" {

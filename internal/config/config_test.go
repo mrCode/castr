@@ -260,3 +260,25 @@ func TestChromecastSizeMustBeSetAsAPair(t *testing.T) {
 		t.Fatal("a width with no height was accepted; the capsfilter would be malformed")
 	}
 }
+
+func TestUnsetLatencyStaysUnsetAndIsSilent(t *testing.T) {
+	// "Not set" must reach the backend as 0 so it can pick per cast; it must
+	// not be mistaken for a too-low value and raised, or warned about.
+	cfg, err := Load(write(t, "[airplay]\naudio = true\n"))
+	if err != nil {
+		t.Fatalf("unset target_latency_ms produced a note: %v", err)
+	}
+	if cfg.AirPlay.TargetLatencyMS != 0 {
+		t.Errorf("target_latency_ms = %d, want 0 (unset)", cfg.AirPlay.TargetLatencyMS)
+	}
+	if Default().AirPlay.TargetLatencyMS != 0 {
+		t.Errorf("default target_latency_ms = %d, want 0 (unset)", Default().AirPlay.TargetLatencyMS)
+	}
+}
+
+func TestExplicitLatencyIsKept(t *testing.T) {
+	cfg, err := Load(write(t, "[airplay]\ntarget_latency_ms = 120\n"))
+	if err != nil || cfg.AirPlay.TargetLatencyMS != 120 {
+		t.Errorf("got %d, %v; want 120, nil", cfg.AirPlay.TargetLatencyMS, err)
+	}
+}

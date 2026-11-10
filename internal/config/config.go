@@ -66,6 +66,10 @@ type AirPlay struct {
 	// at doubletake's default of 100 the same cast ran five and a half minutes
 	// unbroken at a steady 510 KB/s. It looks like a responsiveness knob and
 	// behaves like a stability one.
+	//
+	// 0 means not set: the AirPlay backend then chooses per cast (see
+	// airplay.AutoLatencyNoSoundMS / AutoLatencyWithSoundMS). A set value is
+	// used as is, subject to the minimum below.
 	TargetLatencyMS int `toml:"target_latency_ms"`
 
 	// Audio off removes audio/video sync from the pipeline, which is worth
@@ -123,7 +127,7 @@ func Default() Config {
 			Bitrate:         0,
 			HideVAPostproc:  true,
 			ReadyTimeout:    60,
-			TargetLatencyMS: 100,
+			TargetLatencyMS: 0, // unset: the backend picks per cast
 			Audio:           true,
 		},
 	}
@@ -224,7 +228,7 @@ func (c Config) Validate() error {
 		return fmt.Errorf(
 			"target_latency_ms = %d is below %d, which makes receivers hang up "+
 				"mid-cast (measured: an Apple TV closed the stream after ~30s at 50, "+
-				"and ran unbroken at 100). Raise it, or set 0 for doubletake's default",
+				"and ran unbroken at 100). Raise it, or leave it unset for castr's per-cast default",
 			c.AirPlay.TargetLatencyMS, MinSafeLatencyMS)
 	}
 	if c.AirPlay.Bitrate < 0 {

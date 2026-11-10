@@ -171,15 +171,15 @@ bitrate = 4000
 
 [airplay]
 port_range = "60000-60010"  # the receiver connects back into these
-target_latency_ms = 100     # NOT just a responsiveness knob: below ~80 a
-                            # receiver hangs up mid-cast. Measured — an Apple TV
-                            # closed the stream after ~30s at 50, and ran
-                            # unbroken at 100. castr raises anything lower.
-                            # If the TV's sound has small glitches on busy
-                            # Wi-Fi, raise it to 150: measured on an office
-                            # network, 100 glitched, 150 and 200 were almost
-                            # clean. Each step adds that delay to everything
-                            # the TV shows.
+# target_latency_ms = 150   # leave unset: castr uses 100 without sound and 150
+                            # with sound (measured on an office Wi-Fi: 100
+                            # glitched the TV's sound, 150 was almost clean).
+                            # Set it to override both. NOT just a
+                            # responsiveness knob: below ~80 a receiver hangs
+                            # up mid-cast. Measured — an Apple TV closed the
+                            # stream after ~30s at 50, and ran unbroken at
+                            # 100. castr raises anything lower. Each step adds
+                            # that delay to everything the TV shows.
 ready_timeout = 60          # capture can begin 23s after the session is ready
                             # raise it if you need time to answer the share prompt
 audio = true                # false turns sound off for every receiver, Apple TV

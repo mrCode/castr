@@ -329,3 +329,38 @@ func TestTheHelperIsCastrsOwnNotWhateverIsOnPath(t *testing.T) {
 		t.Errorf("argv[0] = %q, want the helper %q", argv[0], Binary)
 	}
 }
+
+func latencyArg(cfg Config) string {
+	argv := BuildArgv(cfg, "", "10.0.0.5", 7000, "", "")
+	for i, a := range argv {
+		if a == "-target-latency-ms" && i+1 < len(argv) {
+			return argv[i+1]
+		}
+	}
+	return ""
+}
+
+func TestUnsetLatencyIsChosenPerCast(t *testing.T) {
+	cfg := config()
+	cfg.TargetLatencyMS = 0
+
+	cfg.Audio = true
+	if got := latencyArg(cfg); got != "150" {
+		t.Errorf("unset with sound: -target-latency-ms = %q, want 150", got)
+	}
+	cfg.Audio = false
+	if got := latencyArg(cfg); got != "100" {
+		t.Errorf("unset without sound: -target-latency-ms = %q, want 100", got)
+	}
+}
+
+func TestExplicitLatencyIsUsedExactly(t *testing.T) {
+	for _, audio := range []bool{true, false} {
+		cfg := config()
+		cfg.TargetLatencyMS = 120
+		cfg.Audio = audio
+		if got := latencyArg(cfg); got != "120" {
+			t.Errorf("audio=%v: -target-latency-ms = %q, want 120", audio, got)
+		}
+	}
+}
