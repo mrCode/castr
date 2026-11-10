@@ -117,8 +117,19 @@
 > On the stand-in, 2560x1440 HEVC via vah265enc and a 2560x1440 output scaled
 > to a 1080p canvas both ran a clean 60 s. Branches pushed (feature/sound-output,
 > feature/extend-geometry, doubletake castr), and test steps posted on #3
-> (issuecomment 6771107773). Waiting on @diegosoares' results. Still to do:
-> our own real-TV check with an output larger than the TV's canvas.
+> (issuecomment 6771107773). Waiting on @diegosoares' results.
+> Real-TV check DONE 2026-11-10 on the office TV (AppleTV11,1), test package
+> 0.3.0.7 = feature/pairing-sync + doubletake castr 2d16870, extend at
+> geometry 2560x1440@60. The castr output was 2560x1440@60, and the panel stayed
+> at 2560x1600@240.
+> - h264: scaled to 1920x1080 with vah264enc.
+> - hevc: vah265enc, also 1920x1080. This TV offers no larger HEVC canvas,
+>   probably because its panel is 1080p, so a full-size HEVC picture is still
+>   unseen and is up to @diegosoares' Apple TV 4K.
+> - Both: the whole desktop was visible, motion was smooth, and no code was
+>   asked for.
+> - Gotcha: castrd reads config.toml only at start. `castr quit` after editing
+>   it, or the next cast keeps the old codec.
 >
 > **2026-11-10: the sound feature passes on the office Apple TV** (branch
 > feature/sound-output, test package 0.3.0.6, helper = doubletake `castr`
