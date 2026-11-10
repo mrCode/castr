@@ -73,6 +73,18 @@
 > the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
 > (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
 > gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
+> **2026-11-10: issue #3 built** (branch feature/extend-geometry, on top of
+> the sound branch; helper commits df7006d and 0737025, plus 3ff67de, which
+> reverts -print-canvas).
+> - `[capture] geometry = "WxH@R"` is explicit only. The user chose no
+>   "auto" because an Apple TV 4K reports no display size before a session.
+> - `[capture] codec = auto|h264|hevc`.
+> - HEVC through vah265enc on AMD and Intel.
+> - -max-size caps the canvas.
+> On the stand-in, 2560x1440 HEVC via vah265enc and a 2560x1440 output scaled
+> to a 1080p canvas both ran a clean 60 s. Next: a real-TV check, and ask the
+> user before pinging @diegosoares on #3.
+>
 > **2026-11-10: the sound feature passes on the office Apple TV** (branch
 > feature/sound-output, test package 0.3.0.6, helper = doubletake `castr`
 > HEAD). Each cast chooses TV / Laptop / Both from the widget's SOUND section
