@@ -82,8 +82,10 @@
 > - HEVC through vah265enc on AMD and Intel.
 > - -max-size caps the canvas.
 > On the stand-in, 2560x1440 HEVC via vah265enc and a 2560x1440 output scaled
-> to a 1080p canvas both ran a clean 60 s. Next: a real-TV check, and ask the
-> user before pinging @diegosoares on #3.
+> to a 1080p canvas both ran a clean 60 s. Branches pushed (feature/sound-output,
+> feature/extend-geometry, doubletake castr), and test steps posted on #3
+> (issuecomment 6771107773). Waiting on @diegosoares' results. Still to do:
+> our own real-TV check with an output larger than the TV's canvas.
 >
 > **2026-11-10: the sound feature passes on the office Apple TV** (branch
 > feature/sound-output, test package 0.3.0.6, helper = doubletake `castr`
