@@ -73,6 +73,41 @@
 > the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
 > (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
 > gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
+> **2026-11-10: 0.4.0 PREPARED, not released.** It waits for #11503 to verify
+> plugin 1.3.0; do not retarget #11503 before then.
+> - castr branch `release/0.4.0` (from feature/pairing-sync, pushed: no) has
+>   plugin manifest 1.4.0 and the README status. Contents: sound output, #3
+>   geometry/codec, pairing shared mid-session, streaming state after a code,
+>   refusals explained, `castr pair-again`.
+> - Plugin repo `~/workspace/castr-indicator`, local branch `release-1.4.0`
+>   (ac1d57c): widget synced (the SOUND row only), README gains Sound and the
+>   full command table. `sync-plugin-repo.sh` says in sync.
+> - Helper: `castr-airplay-2` will be doubletake `castr` at 2d16870 (pushed;
+>   not tagged).
+> - Release candidate castr 0.4.0rc1 built with check() (both suites pass) and
+>   installed here; the bar widget file equals the packaged one.
+> - preview.png in the plugin repo predates the SOUND row. Optional: retake it
+>   during a cast.
+>
+> RELEASE DAY, each outward step confirmed with the user:
+> 1. doubletake: `git tag -a castr-airplay-2 2d16870 -m "castr-airplay 2: audio
+>    from a named source, HEVC via VA-API, -max-size, playout-margin
+>    diagnostics"`; push the tag.
+> 2. castr: in packaging/PKGBUILD set pkgver=0.4.0 and _airplay=castr-airplay-2.
+>    Run `git merge --ff-only release/0.4.0` on main, tag v0.4.0 (annotated,
+>    "castr 0.4.0"), and push main and the tag. Fetch both GitHub tarballs,
+>    sha256 them, commit the sums, push.
+> 3. AUR (~/workspace/aur-castr): copy the PKGBUILD, `makepkg --printsrcinfo >
+>    .SRCINFO`, `makepkg -f`, push.
+> 4. Plugin: fast-forward main to release-1.4.0, tag v1.4.0, push.
+> 5. #11503: retarget to the 1.4.0 commit and comment on what changed. The
+>    widget diff is the SOUND row only: three literal values, PlainText, no
+>    input field.
+> 6. Here: `yay -S castr` (replaces 0.4.0rc1); in
+>    ~/.config/omarchy/plugins/castr.indicator, `git checkout Widget.qml` then
+>    pull to 1.4.0.
+> 7. #3: tell @diegosoares it is released.
+>
 > **2026-11-10: the helper's refusals are explained in castr's terms**
 > (feature/pairing-sync: cf97c80, 561f480, plus the check after; not pushed).
 > - castr matches the helper's final line once it has exited, and gives
