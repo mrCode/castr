@@ -7,11 +7,13 @@ Static binaries -- a client, a daemon, and `castr-airplay`, castr's own build
 of [doubletake](https://github.com/omarroth/doubletake) for AirPlay. `avahi`
 for discovery, `hyprctl` for outputs, GStreamer to capture and encode.
 
-> **Status: released, verified on hardware.** v0.2.0 is on the AUR. Mirror and
+> **Status: released, verified on hardware.** v0.4.0 is on the AUR. Mirror and
 > extend have both been cast to a real Apple TV, and mirror to a real Chromecast
 > (a Xiaomi TV Stick, a minute of unbroken playback) — picture confirmed, capture
 > traced to the screen-share portal rather than a camera, the panel left at its
-> own refresh rate, and a nine-minute mirror session held at a steady rate.
+> own refresh rate, and a nine-minute mirror session held at a steady rate. On
+> the Apple TV, sound switched between TV, laptop and both mid-cast, and extend
+> ran at 2560x1440 in H.264 and HEVC.
 
 ## Why a rewrite
 
