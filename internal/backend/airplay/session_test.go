@@ -285,6 +285,7 @@ type harness struct {
 	// castr switches a panel now.
 	switched  bool
 	states    []string
+	reasons   []string
 	credModes []string
 	argvs     [][]string
 
@@ -338,6 +339,7 @@ func newHarness(t *testing.T, chunks ...string) *harness {
 		Emit: func(d discovery.Device, s session.State, reason string) {
 			h.mu.Lock()
 			h.states = append(h.states, string(s))
+			h.reasons = append(h.reasons, reason)
 			h.mu.Unlock()
 		},
 	}
@@ -1295,5 +1297,32 @@ func TestAStopDuringTheWaitAfterACodeIsNotAlsoAFailure(t *testing.T) {
 	h.procs[0].mu.Unlock()
 	if n != 1 {
 		t.Errorf("the helper was terminated %d times, want once", n)
+	}
+}
+
+func TestAHelperThatDiesAfterCaptureStartsIsReportedAsACrash(t *testing.T) {
+	// Capture began after the code and then the helper died. Whichever side
+	// reports it, the user must read that the cast stopped -- not advice to
+	// check the receiver's access control, as if no code had ever appeared.
+	h := newHarness(t, "pairing required. "+PinPrompt+": ")
+	h.afterPin = []string{readyOutput}
+	h.afterPinExits = true
+	ctx := context.Background()
+	if err := h.backend.Start(ctx, device("a", "TV"), session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.backend.SubmitPin(ctx, device("a", "TV"), "1234"); err != nil {
+		t.Fatal(err)
+	}
+	if !eventually(func() bool { return h.sawState(session.Failed) }) {
+		t.Fatal("the crash was never reported")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, st := range h.states {
+		if st == string(session.Failed) && !strings.Contains(h.reasons[i], "stopped unexpectedly") {
+			t.Errorf("failure reason = %q, want it reported as a crash", h.reasons[i])
+		}
 	}
 }

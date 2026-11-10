@@ -67,6 +67,10 @@ type Backend struct {
 	// ends. A session leaves sessions earlier than that -- Stop removes it
 	// before the helper has exited -- so sessions cannot answer this.
 	helpers map[string]int
+	// pullMu holds a second Start back until the first one's pull has
+	// finished, so its helper never loads the file the pull is replacing --
+	// and later saves that older copy from memory over the pulled pairings.
+	pullMu sync.Mutex
 }
 
 type castSession struct {
@@ -149,6 +153,7 @@ func (b *Backend) Start(ctx context.Context, device discovery.Device, mode strin
 
 	// Reserved before the pull and held until this helper's output ends, so a
 	// second cast starting in this mode meanwhile leaves the file alone.
+	b.pullMu.Lock()
 	b.mu.Lock()
 	b.init()
 	free := b.helpers[mode] == 0
@@ -163,6 +168,7 @@ func (b *Backend) Start(ctx context.Context, device discovery.Device, mode strin
 	if free {
 		b.pullPairing(device, mode)
 	}
+	b.pullMu.Unlock()
 
 	credsPath, err := b.Creds(mode)
 	if err != nil {
@@ -354,6 +360,12 @@ func (b *Backend) teardown(cs *castSession) error {
 	if cs.proc != nil {
 		_ = cs.proc.Terminate()
 		_ = cs.proc.Wait()
+		// And until the helper's output has ended, which is when the pump
+		// lets go of the mode's credentials file (Backend.helpers). Wait
+		// returns first; without this a restart of the only cast in a mode
+		// found the file still held and skipped its pull. The spawner bounds
+		// how long the output can outlive the process.
+		<-cs.exited
 	}
 	return b.undo(cs)
 }
@@ -427,6 +439,15 @@ func pinSeen(cs *castSession) bool {
 
 // failAfterPin reports a child that died while the user was looking for a code.
 func (b *Backend) failAfterPin(cs *castSession) {
+	// Capture had started, so this is a cast that crashed, not one that
+	// never got its code -- and the advice about access control would send
+	// the user the wrong way.
+	select {
+	case <-cs.ready:
+		b.announceCrash(cs)
+		return
+	default:
+	}
 	b.mu.Lock()
 	if cs.stopping || cs.crashed {
 		b.mu.Unlock()
