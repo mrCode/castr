@@ -50,8 +50,8 @@ const Usage = `castr — cast this screen to an AirPlay receiver
   castr forget <id>          drop a registered receiver
   castr quit                 stop the background daemon
   castr reset-share [mode]   forget which output to share, so you get asked again
-  castr unpair <id>          forget the pairing with an Apple TV that was reset or
-                             replaced; the next cast asks for a new code
+  castr pair-again <id>      pair again with an Apple TV that was reset: the next
+                             cast to it asks for the code it shows
   castr version              print the version
 `
 
@@ -84,8 +84,8 @@ func (a *App) Run(args []string) int {
 		return a.forget(args[1:])
 	case "reset-share":
 		return a.resetShare(args[1:])
-	case "unpair":
-		return a.unpair(args[1:])
+	case "pair-again":
+		return a.pairAgain(args[1:])
 	case "quit":
 		return a.run(a.Client.Quit)
 	case "help", "-h", "--help":
@@ -232,47 +232,30 @@ func (a *App) bar() int {
 	return 0
 }
 
-// unpair forgets castr's pairing with one AirPlay receiver, so the next cast
-// pairs with it from scratch. castr-airplay refuses a receiver that cannot
-// prove it is the one paired with, and for one that was reset or replaced
-// this is the way past that -- castr's answer to the helper's own advice
-// (-pair, or editing the credentials file), which castr users cannot follow.
+// pairAgain makes the next cast to one AirPlay receiver pair with it again,
+// with a code, instead of verifying its saved pairing. castr-airplay refuses a
+// receiver that cannot prove it is the one paired with, and for one that was
+// reset this is the way past that: castr's form of the helper's own advice,
+// "run again with -pair", which castr users cannot follow.
 //
-// It accepts the id castr lists, or the receiver's address: a receiver added
-// by address is saved under the device ID it reports, and found by the
-// address its pairing is bound to.
-//
-// Casts are stopped first, every one of them: a running helper rewrites its
-// mode's whole file from memory when it saves, and would put the pairing
-// straight back, whichever receiver it is casting to.
-func (a *App) unpair(args []string) int {
+// Nothing is forgotten (see config.PairAgainMark for why that matters) and no
+// pairing file is touched -- the mark is castr's own file, read when a cast
+// starts -- so no cast needs stopping.
+func (a *App) pairAgain(args []string) int {
 	if len(args) != 1 {
-		return a.fail("unpair needs a receiver: castr unpair <id or address>")
+		return a.fail("pair-again needs a receiver: castr pair-again <id or address>")
 	}
 	target, ok := pairingTarget(args[0])
 	if !ok {
 		return a.fail(fmt.Sprintf("%s is not an AirPlay receiver; only AirPlay receivers are paired", args[0]))
 	}
-
-	if sessions, err := a.Client.Sessions(); err == nil && len(sessions) > 0 {
-		for _, s := range sessions {
-			if err := a.Client.Stop(s.DeviceID); err != nil {
-				return a.fail(fmt.Sprintf("stopping %s first: %v", s.Name, err))
-			}
-		}
-	}
-
-	modes, err := config.ForgetPairing(daemon.StateDir(), session.Modes, target)
+	mark, err := config.MarkPairAgain(daemon.StateDir(), session.Modes, target)
 	if err != nil {
-		return a.fail(err.Error())
+		return a.fail(fmt.Sprintf("castr cannot pair again with %s: %v", args[0], err))
 	}
-	if len(modes) == 0 {
-		fmt.Fprintf(a.Out, "castr has no pairing with %s; nothing to forget.\n", args[0])
-		return 0
-	}
-	fmt.Fprintf(a.Out, "Forgot the pairing with %s. The next cast to it pairs again: enter the code "+
-		"the receiver shows. If it shows no code, the device castr reached is not that receiver -- "+
-		"stop, and check what is at its address.\n", args[0])
+	fmt.Fprintf(a.Out, "The next cast to %s pairs with it again (%s). The receiver shows a code: "+
+		"enter it only if it appears on your receiver. If it shows none, something else answered "+
+		"-- enter nothing, and stop the cast.\n", args[0], mark.DeviceID)
 	return 0
 }
 

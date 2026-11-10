@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/mrCode/castr/internal/discovery"
 )
 
 // helperPath is where castr's package installs castr-airplay.
@@ -64,6 +66,7 @@ var PinPrompts = []string{
 	"Enter the receiver's configured password or pairing PIN",          // 0.5.0, display failed
 	"Enter the receiver's configured password",                         // 0.5.0, password-only receiver
 	"Enter the code shown on the receiver, or its configured password", // 0.5.0, late Digest challenge
+	"Enter the receiver's pairing password",                            // pairing again (-pair)
 }
 
 // The latency castr picks when the user has not set target_latency_ms. The
@@ -182,6 +185,15 @@ func BuildArgv(cfg Config, deviceID, address string, port int, credsPath, audioS
 	}
 
 	return argv
+}
+
+// PairingKey is what a receiver's saved pairing is found by: its advertised
+// device ID, or for one that advertised none, its address.
+func PairingKey(d discovery.Device) (deviceID, address string) {
+	if id := airPlayDeviceID(d.ID, d.Address); id != "" {
+		return id, ""
+	}
+	return "", d.Address
 }
 
 // airPlayDeviceID is the receiver's advertised device ID within castr's id,

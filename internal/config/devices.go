@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/mrCode/castr/internal/discovery"
@@ -405,54 +404,6 @@ func PullPairing(stateDir, mode string, modes []string) error {
 	return nil
 }
 
-// ForgetPairing removes castr's pairing with one receiver from every mode's
-// file, so the next cast pairs with it from scratch and asks for a code. This
-// is what castr-airplay means by "remove its entry from the credentials file":
-// the way to pair again with a receiver that was reset or replaced.
-//
-// target names the receiver by device ID, the key it is saved under, or by
-// the address its pairing is bound to (receiver_address), which is how a
-// receiver added by address is known. Only pairingFields go: the
-// restore_token is which output to share, not part of the pairing, and an
-// entry left with nothing is removed. It returns the modes it changed.
-//
-// The caller stops every cast first. A running helper rewrites its whole file
-// from memory when it saves, and would put the pairing back.
-func ForgetPairing(stateDir string, modes []string, target string) ([]string, error) {
-	var changed []string
-	for _, mode := range modes {
-		path := CredsPath(stateDir, mode)
-		creds, err := readCreds(path)
-		if err != nil {
-			return changed, err
-		}
-		touched := false
-		for id, entry := range creds {
-			address, _ := entry["receiver_address"].(string)
-			if !strings.EqualFold(id, target) && (address == "" || address != target) {
-				continue
-			}
-			for _, field := range pairingFields {
-				if _, ok := entry[field]; ok {
-					delete(entry, field)
-					touched = true
-				}
-			}
-			if len(entry) == 0 {
-				delete(creds, id)
-			}
-		}
-		if !touched {
-			continue
-		}
-		if err := writeCreds(path, creds); err != nil {
-			return changed, err
-		}
-		changed = append(changed, mode)
-	}
-	return changed, nil
-}
-
 func readCreds(path string) (map[string]map[string]any, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -474,6 +425,11 @@ func writeCreds(path string, creds map[string]map[string]any) error {
 	if err != nil {
 		return fmt.Errorf("encoding credentials: %w", err)
 	}
+	return writeFileAtomic(path, append(raw, '\n'))
+}
+
+// writeFileAtomic writes a private file by rename, synced first.
+func writeFileAtomic(path string, raw []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -486,7 +442,7 @@ func writeCreds(path string, creds map[string]map[string]any) error {
 		return err
 	}
 	defer os.Remove(tmp.Name()) // a no-op once renamed
-	if _, err := tmp.Write(append(raw, '\n')); err != nil {
+	if _, err := tmp.Write(raw); err != nil {
 		tmp.Close()
 		return err
 	}

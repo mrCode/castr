@@ -368,6 +368,16 @@ func newAirPlayBackend(cfg config.Config, stateDir string) *airplay.Backend {
 		PullPairing: func(mode string) error {
 			return config.PullPairing(stateDir, mode, session.Modes)
 		},
+		PairAgain: func(d discovery.Device) (string, bool) {
+			id, address := airplay.PairingKey(d)
+			mark, ok := config.PairAgainFor(stateDir, id, address)
+			return mark.DeviceID, ok
+		},
+		PairedAgain: func(id string) {
+			if err := config.ClearPairAgain(stateDir, id); err != nil {
+				log.Printf("clearing the pair-again mark for %s: %v", id, err)
+			}
+		},
 		Spawn: spawner(cfg, stateDir),
 	}
 }

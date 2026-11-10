@@ -396,10 +396,11 @@ func TestTheCodecAndCapAreForwardedOnlyWhenSet(t *testing.T) {
 	}
 }
 
-// Real refusals, as castr-airplay (doubletake branch castr) prints them.
+// Real refusals, as castr-airplay (doubletake branch castr) prints them: the
+// format strings in cmd/doubletake/main.go and internal/airplay, filled in.
 var refusals = map[string]string{
 	"identity": "2026/11/10 20:10:42 receiver did not prove its pairing identity: pair-verify " +
-		"signature does not match the saved receiver key; refusing to cast. The device answering " +
+		"V2 signature does not verify; refusing to cast. The device answering " +
 		"as \"Basem's Office\" is not the receiver this machine paired with, or will not prove it. " +
 		"If you reset or replaced that receiver, run again with -pair and enter the code it shows; " +
 		"a receiver that shows no code is not the one you paired with.\n",
@@ -420,13 +421,26 @@ var refusals = map[string]string{
 	"raw": "2026/11/10 20:10:42 receiver did not prove its pairing identity: it was paired with " +
 		"without a code, but now asks for one; if the receiver really changed, remove its entry " +
 		"from the credentials file and connect again; refusing to cast\n",
+	"impostor": "2026/11/10 20:10:42 receiver did not prove its pairing identity: the device at " +
+		"this address names itself \"11:11:11:11:11:11\", not \"FE:5C:81:22:50:38\", which this " +
+		"machine paired with (if \"FE:5C:81:22:50:38\" has left and another receiver now has its " +
+		"address, discover again); refusing to cast. FE:5C:81:22:50:38 is the receiver this machine " +
+		"paired with at 10.10.10.231; if a different receiver now has that address, pair with it " +
+		"explicitly: run again with -pair and enter the code it shows.\n",
+	"tie": "2026/11/10 20:10:42 receiver did not prove its pairing identity: the device at " +
+		"10.10.10.231 names itself \"CC:CC\", but this machine paired there with AA:AA and BB:BB, " +
+		"recorded as paired at the same time, and it is none of them; remove the stale entry from " +
+		"the credentials file; refusing to cast\n",
+	"unproven": "2026/11/10 20:10:42 pairing failed: receiver did not prove its pairing identity: " +
+		"pair-setup M6 carried no receiver identity\n",
 }
 
 func TestEachRefusalIsRecognised(t *testing.T) {
 	want := map[string]refusal{
 		"identity": refusalIdentity, "password": refusalPassword, "streamkey": refusalStreamKey,
-		"unstable": refusalUnstable, "saved": refusalSavedPairing, "nopin": refusalSavedPairing,
-		"raw": refusalIdentity,
+		"unstable": refusalUnstable, "saved": refusalSavedPairing, "nopin": refusalNoPIN,
+		"raw": refusalIdentity, "impostor": refusalImpostor, "tie": refusalImpostor,
+		"unproven": refusalUnproven,
 	}
 	for name, line := range refusals {
 		var s Scanner
@@ -449,15 +463,32 @@ func TestOrdinaryOutputIsNoRefusal(t *testing.T) {
 	}
 }
 
+func TestOnlyTheLastLineCanBeARefusal(t *testing.T) {
+	// The helper logs a failed pair-verify and carries on, pairing again with
+	// a code. If the user then mistypes it, that is the failure -- not a
+	// refused saved pairing, which would send them to pair again for nothing.
+	var s Scanner
+	s.Absorb("2026/11/10 20:10:42 pair-verify with saved creds failed: connection reset\n" +
+		"Enter the PIN shown on the receiver: \n" +
+		"2026/11/10 20:10:50 pairing failed: pair-setup M4 error: 2\n\n")
+	if kind, _ := s.Refusal(); kind != refusalNone {
+		t.Errorf("kind = %v, want none: the earlier line was not the end", kind)
+	}
+}
+
+func device1() discovery.Device {
+	return discovery.Device{ID: "airplay:FE:5C:81:22:50:38", Name: "Basem's Office", Address: "10.10.10.231"}
+}
+
 func TestNoRefusalMessageRepeatsAdviceCastrUsersCannotFollow(t *testing.T) {
 	// castr runs the helper itself: its users cannot add -pair or
 	// -no-encrypt, and should not hand-edit a file holding private keys.
-	d := discovery.Device{ID: "airplay:FE:5C:81:22:50:38", Name: "Basem's Office", Address: "10.10.10.231"}
 	for name, line := range refusals {
 		var s Scanner
 		s.Absorb(line)
-		msg := refusalMessage(d, &s)
-		for _, banned := range []string{"-pair", "-no-encrypt", "credentials file", ".json", "run again"} {
+		msg := refusalMessage(device1(), &s)
+		for _, banned := range []string{"-pair ", "-pair.", "-no-encrypt", "credentials file", ".json",
+			"run again", "discover again", "; pair again", "/usr/lib"} {
 			if strings.Contains(msg, banned) {
 				t.Errorf("%s: message passes on %q: %s", name, banned, msg)
 			}
@@ -468,33 +499,35 @@ func TestNoRefusalMessageRepeatsAdviceCastrUsersCannotFollow(t *testing.T) {
 	}
 }
 
-func TestARefusalThatUnpairingFixesSaysHow(t *testing.T) {
-	d := discovery.Device{ID: "airplay:FE:5C:81:22:50:38", Name: "Basem's Office", Address: "10.10.10.231"}
-	for _, name := range []string{"identity", "password", "saved", "nopin", "raw"} {
+func TestPairingAgainIsSuggestedOnlyWhereItIsTheFix(t *testing.T) {
+	for _, name := range []string{"identity", "password", "saved", "raw"} {
 		var s Scanner
 		s.Absorb(refusals[name])
-		if msg := refusalMessage(d, &s); !strings.Contains(msg, "castr unpair airplay:FE:5C:81:22:50:38") {
+		if msg := refusalMessage(device1(), &s); !strings.Contains(msg, "castr pair-again airplay:FE:5C:81:22:50:38") {
 			t.Errorf("%s: message does not say how to pair again: %s", name, msg)
 		}
 	}
-	// Unpairing is no answer to these, and suggesting it would teach users
-	// to throw a pairing away whenever something goes wrong.
-	for _, name := range []string{"streamkey", "unstable"} {
+	// A device naming itself as another receiver is never a reset one -- a
+	// reset Apple TV keeps its device ID. Suggesting pairing again there, or
+	// where it would change nothing, teaches users to do it whenever a cast
+	// fails.
+	for _, name := range []string{"impostor", "tie", "streamkey", "unstable", "nopin", "unproven"} {
 		var s Scanner
 		s.Absorb(refusals[name])
-		if msg := refusalMessage(d, &s); strings.Contains(msg, "unpair") {
-			t.Errorf("%s: message suggests unpairing: %s", name, msg)
+		if msg := refusalMessage(device1(), &s); strings.Contains(msg, "pair-again") {
+			t.Errorf("%s: message suggests pairing again: %s", name, msg)
 		}
 	}
 }
 
-func TestTheIdentityRefusalKeepsTheWarningAboutAnImpostor(t *testing.T) {
-	// Unpairing from a device that is not the user's TV is exactly what an
-	// impostor needs; the message has to say how to tell.
-	d := discovery.Device{ID: "airplay:FE:5C:81:22:50:38", Name: "Basem's Office", Address: "10.10.10.231"}
-	var s Scanner
-	s.Absorb(refusals["identity"])
-	if msg := refusalMessage(d, &s); !strings.Contains(msg, "shows no code") {
-		t.Errorf("message lost the impostor warning: %s", msg)
+func TestPairingAgainAdviceSaysWhenNotToEnterACode(t *testing.T) {
+	// The real receiver shows the code. One that does not is not the user's,
+	// and the code prompt is where they would find out.
+	for _, name := range []string{"identity", "saved", "raw"} {
+		var s Scanner
+		s.Absorb(refusals[name])
+		if msg := refusalMessage(device1(), &s); !strings.Contains(msg, "shows none") {
+			t.Errorf("%s: message lost the warning: %s", name, msg)
+		}
 	}
 }

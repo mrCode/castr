@@ -59,6 +59,12 @@ type Backend struct {
 	// credentials file. Start calls it before the helper reads that file,
 	// unless another cast is using it. Nil skips it.
 	PullPairing func(mode string) error
+	// PairAgain reports whether a receiver is marked to pair again (`castr
+	// pair-again`), and the device ID of the receiver it paired with. Its
+	// next cast then passes -pair and -device-id. Nil marks none.
+	PairAgain func(device discovery.Device) (deviceID string, ok bool)
+	// PairedAgain clears a mark, once a cast that paired again is streaming.
+	PairedAgain func(deviceID string)
 
 	mu       sync.Mutex
 	sessions map[string]*castSession
@@ -100,6 +106,8 @@ type castSession struct {
 	once   sync.Once
 	// afterPin starts the one wait that follows the code (awaitAfterPin).
 	afterPin sync.Once
+	// pairAgain is the device ID this cast pairs again with, if marked.
+	pairAgain string
 }
 
 func (b *Backend) init() {
@@ -177,8 +185,15 @@ func (b *Backend) Start(ctx context.Context, device discovery.Device, mode strin
 		return err
 	}
 
-	proc, err := b.Spawn(ctx, BuildArgv(b.Config, device.ID, device.Address, device.Port, credsPath,
-		b.audioSource(device.ID)))
+	argv := BuildArgv(b.Config, device.ID, device.Address, device.Port, credsPath,
+		b.audioSource(device.ID))
+	if b.PairAgain != nil {
+		if id, ok := b.PairAgain(device); ok && id != "" {
+			cs.pairAgain = id
+			argv = withPairAgain(argv, id)
+		}
+	}
+	proc, err := b.Spawn(ctx, argv)
 	if err != nil {
 		b.undo(cs)
 		msg := fmt.Sprintf("%s failed to start: %v", Binary, err)
@@ -248,7 +263,7 @@ func (b *Backend) awaitReady(ctx context.Context, cs *castSession) error {
 	select {
 	case <-cs.ready:
 		b.settle(cs, true)
-		b.emit(cs.device, session.Streaming, "")
+		b.reportStreaming(cs)
 		return nil
 
 	case <-cs.pin:
@@ -260,7 +275,7 @@ func (b *Backend) awaitReady(ctx context.Context, cs *castSession) error {
 		// and both channels are closed, so select would pick between them at
 		// random. Capture did start; the pump owns what happens next.
 		if cs.scan.Ready() {
-			b.emit(cs.device, session.Streaming, "")
+			b.reportStreaming(cs)
 			b.settle(cs, true)
 			return nil
 		}
@@ -281,10 +296,13 @@ func (b *Backend) awaitReady(ctx context.Context, cs *castSession) error {
 // when the receiver was on another subnet with zero firewall drops, and twice
 // when the child had already printed the real reason.
 func (b *Backend) failureMessage(cs *castSession, exited bool) string {
-	// A refusal first: the helper exits on it, and its own advice is for a
-	// command line castr users never see.
-	if msg := refusalMessage(cs.device, cs.scan); msg != "" {
-		return msg
+	// A refusal first, once the helper has exited on it: its own advice is
+	// for a command line castr users never see. A helper still running has
+	// refused nothing.
+	if exited {
+		if msg := refusalMessage(cs.device, cs.scan); msg != "" {
+			return msg
+		}
 	}
 	// Then a portal failure, on BOTH paths: whether the child timed out or
 	// exited, if it told us why then that is the answer.
@@ -617,7 +635,34 @@ func (b *Backend) awaitAfterPin(cs *castSession) {
 		b.announceCrash(cs) // printed ready, then died: the pump left it to us
 		return
 	}
+	b.reportStreaming(cs)
+}
+
+// reportStreaming announces that capture started, and clears a pair-again
+// mark: the cast got this far only by pairing with a code.
+func (b *Backend) reportStreaming(cs *castSession) {
 	b.emit(cs.device, session.Streaming, "")
+	if cs.pairAgain != "" && b.PairedAgain != nil {
+		b.PairedAgain(cs.pairAgain)
+	}
+}
+
+// withPairAgain makes argv pair again with the receiver whose device ID is id:
+// -pair, and -device-id id in place of any other. The device ID matters as
+// much as -pair. Without it the helper, told to pair deliberately, pairs with
+// whatever answers at the address -- as a first contact if it names itself as
+// a new receiver; with it, such a device is refused, and the receiver meant
+// pairs again with the kind of code its pairing was made with.
+func withPairAgain(argv []string, id string) []string {
+	out := make([]string, 0, len(argv)+3)
+	for i := 0; i < len(argv); i++ {
+		if argv[i] == "-device-id" && i+1 < len(argv) {
+			i++
+			continue
+		}
+		out = append(out, argv[i])
+	}
+	return append(out, "-device-id", id, "-pair")
 }
 
 // pullPairing brings the other modes' pairings into mode's file, so a receiver

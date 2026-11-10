@@ -1337,7 +1337,70 @@ func TestARefusingHelperIsExplainedInCastrsTerms(t *testing.T) {
 	if err == nil {
 		t.Fatal("a refused cast reported success")
 	}
-	if !strings.Contains(err.Error(), "castr unpair") || strings.Contains(err.Error(), "-pair") {
+	if !strings.Contains(err.Error(), "castr pair-again") || strings.Contains(err.Error(), "-pair ") {
 		t.Errorf("error = %q, want castr's advice and not the helper's", err)
+	}
+}
+
+func TestAReceiverMarkedToPairAgainIsCastToWithPair(t *testing.T) {
+	// castr's form of the helper's own advice: -pair, with the device ID of
+	// the receiver paired with -- also for one castr knows only by address,
+	// so a device naming itself as another receiver is still refused.
+	for _, d := range []discovery.Device{
+		device("airplay:FE:5C:81:22:50:38", "Office"),
+		{ID: "airplay:manual:10.0.0.5", Name: "Office", Address: "10.0.0.5", Port: 7000},
+	} {
+		h := newHarness(t, readyOutput)
+		var cleared []string
+		h.backend.PairAgain = func(got discovery.Device) (string, bool) {
+			return "FE:5C:81:22:50:38", got.ID == d.ID
+		}
+		h.backend.PairedAgain = func(id string) { cleared = append(cleared, id) }
+
+		if err := h.backend.Start(context.Background(), d, session.ModeMirror); err != nil {
+			t.Fatal(err)
+		}
+		argv := strings.Join(h.argvs[0], " ")
+		if !strings.Contains(argv, " -pair") || strings.Count(argv, "-device-id") != 1 ||
+			!strings.Contains(argv, "-device-id FE:5C:81:22:50:38") {
+			t.Errorf("%s: argv = %s", d.ID, argv)
+		}
+		if !eventually(func() bool { return len(cleared) == 1 }) || cleared[0] != "FE:5C:81:22:50:38" {
+			t.Errorf("%s: mark cleared = %v, want it cleared once streaming", d.ID, cleared)
+		}
+	}
+}
+
+func TestAFailedPairAgainKeepsTheMark(t *testing.T) {
+	h := newHarness(t, refusals["unproven"])
+	h.childExits = true
+	cleared := 0
+	h.backend.PairAgain = func(discovery.Device) (string, bool) { return "FE:5C:81:22:50:38", true }
+	h.backend.PairedAgain = func(string) { cleared++ }
+
+	_ = h.backend.Start(context.Background(), device("airplay:FE:5C:81:22:50:38", "Office"), session.ModeMirror)
+	if cleared != 0 {
+		t.Error("the mark was cleared although pairing failed")
+	}
+}
+
+func TestAnUnmarkedReceiverIsCastToWithoutPair(t *testing.T) {
+	h := newHarness(t, readyOutput)
+	h.backend.PairAgain = func(discovery.Device) (string, bool) { return "", false }
+	if err := h.backend.Start(context.Background(), device("airplay:FE:5C:81:22:50:38", "Office"), session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(h.argvs[0], " "), "-pair") {
+		t.Error("-pair passed for a receiver nobody marked")
+	}
+}
+
+func TestThePairingPasswordPromptIsRecognised(t *testing.T) {
+	// Pairing again with a password receiver asks with its own sentence.
+	// Missed, the cast would sit in connecting with the helper waiting.
+	var s Scanner
+	s.Absorb("Enter the receiver's pairing password: ")
+	if !s.NeedsPin() {
+		t.Error("the pairing password prompt was not taken for a code prompt")
 	}
 }
