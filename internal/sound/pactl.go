@@ -94,6 +94,14 @@ func unloadRef(run Runner, m modRef, mods []module) error {
 type sinkInput struct {
 	index, sink int
 	owner       int // -1 for a stream no module owns: an app
+	mute        bool
+}
+
+// sourceOutput is a stream recording from a source.
+type sourceOutput struct {
+	index, source int
+	owner         int    // -1 for a stream no module owns
+	target        string // its target.object; "" for none
 }
 
 func pactl(run Runner, args ...string) (string, error) {
@@ -112,8 +120,14 @@ func defaultSink(run Runner) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-func listSinks(run Runner) ([]sink, error) {
-	out, err := pactl(run, "list", "short", "sinks")
+func listSinks(run Runner) ([]sink, error) { return listShort(run, "sinks") }
+
+// listSources lists the sources, sinks' monitors among them, as sinks: by id
+// and name.
+func listSources(run Runner) ([]sink, error) { return listShort(run, "sources") }
+
+func listShort(run Runner, what string) ([]sink, error) {
+	out, err := pactl(run, "list", "short", what)
 	if err != nil {
 		return nil, err
 	}
@@ -183,26 +197,63 @@ func listSinkInputs(run Runner) ([]sinkInput, error) {
 	if err != nil {
 		return nil, err
 	}
-	// owner_module is a string id, or null for a stream no module owns.
 	var raw []struct {
 		Index int     `json:"index"`
 		Sink  int     `json:"sink"`
 		Owner *string `json:"owner_module"`
+		Mute  bool    `json:"mute"`
 	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		return nil, fmt.Errorf("parsing pactl's sink-inputs: %w", err)
 	}
 	inputs := make([]sinkInput, 0, len(raw))
 	for _, r := range raw {
-		in := sinkInput{index: r.Index, sink: r.Sink, owner: -1}
-		if r.Owner != nil {
-			if id, err := strconv.Atoi(*r.Owner); err == nil {
-				in.owner = id
-			}
-		}
-		inputs = append(inputs, in)
+		inputs = append(inputs, sinkInput{index: r.Index, sink: r.Sink, owner: ownerID(r.Owner), mute: r.Mute})
 	}
 	return inputs, nil
+}
+
+// ownerID reads owner_module: a string id, or null for a stream no module
+// owns, -1.
+func ownerID(owner *string) int {
+	if owner != nil {
+		if id, err := strconv.Atoi(*owner); err == nil {
+			return id
+		}
+	}
+	return -1
+}
+
+// streamOf finds the playback stream of the module with this id: a
+// loopback's.
+func streamOf(inputs []sinkInput, module int) (sinkInput, bool) {
+	for _, in := range inputs {
+		if in.owner == module {
+			return in, true
+		}
+	}
+	return sinkInput{}, false
+}
+
+func listSourceOutputs(run Runner) ([]sourceOutput, error) {
+	out, err := pactl(run, "--format=json", "list", "source-outputs")
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		Index  int               `json:"index"`
+		Source int               `json:"source"`
+		Owner  *string           `json:"owner_module"`
+		Props  map[string]string `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return nil, fmt.Errorf("parsing pactl's source-outputs: %w", err)
+	}
+	outputs := make([]sourceOutput, 0, len(raw))
+	for _, r := range raw {
+		outputs = append(outputs, sourceOutput{index: r.Index, source: r.Source, owner: ownerID(r.Owner), target: r.Props["target.object"]})
+	}
+	return outputs, nil
 }
 
 // loadNullSink creates a virtual output. The description is quoted twice
@@ -224,14 +275,17 @@ func loadNullSink(run Runner, name, description string) (modRef, error) {
 // loopback-<pid>-<n>, is new on every load: so every loopback to the laptop
 // shares one media.name, and every loopback to a receiver another, and
 // WirePlumber's state stays at four entries however often the sound is
-// switched. The quoting is loadNullSink's.
+// switched. WirePlumber is also told not to restore or remember their
+// volume and mute (state.restore-props): castr sets both right after the
+// load, and a mute it remembered from an earlier cast, restored a moment
+// later, would silence this one. The quoting is loadNullSink's.
 func loadLoopback(run Runner, source, sink, name string) (modRef, error) {
 	media := "castr_loop_laptop"
 	if name != "laptop" {
 		media = "castr_loop_cast"
 	}
 	props := func(dir string) string {
-		return fmt.Sprintf(`"media.name=%s node.name=castr_loop_%s_%s"`, media, name, dir)
+		return fmt.Sprintf(`"media.name=%s node.name=castr_loop_%s_%s state.restore-props=false"`, media, name, dir)
 	}
 	id, err := loadModule(run, loopbackModule, "source="+source, "sink="+sink, "latency_msec=30",
 		"sink_dont_move=true", "source_dont_move=true",
@@ -264,6 +318,27 @@ func fullAndUnmuted(run Runner, name string) error {
 		return err
 	}
 	_, err := pactl(run, "set-sink-mute", name, "0")
+	return err
+}
+
+// setStreamMute mutes or unmutes one stream: only ever one of castr's own
+// loopbacks', never a real output, which may be what a receiver captures.
+func setStreamMute(run Runner, index int, mute bool) error {
+	v := "0"
+	if mute {
+		v = "1"
+	}
+	_, err := pactl(run, "set-sink-input-mute", strconv.Itoa(index), v)
+	return err
+}
+
+func setStreamFullVolume(run Runner, index int) error {
+	_, err := pactl(run, "set-sink-input-volume", strconv.Itoa(index), "100%")
+	return err
+}
+
+func moveSourceOutput(run Runner, index int, source string) error {
+	_, err := pactl(run, "move-source-output", strconv.Itoa(index), source)
 	return err
 }
 

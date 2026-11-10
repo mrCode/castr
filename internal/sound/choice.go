@@ -4,12 +4,16 @@
 // While anything is cast with sound, all laptop sound is routed into castr's
 // own virtual output, castr_mix, which is made the default. Each cast gets its
 // own output, castr_cast_<n>, whose monitor its receiver captures. Loopbacks
-// copy castr_mix into each cast that is on TV or Both, and into the real
-// output while any cast is on Laptop or Both. Switching only loads or unloads
-// loopbacks, so the receiver's capture -- and the picture -- never restarts.
+// copy castr_mix into each cast's output and into the real output; each is
+// loaded once, and its stream is muted while its end should be silent: a
+// cast's unless the cast is on TV or Both, the laptop's unless any cast is on
+// Laptop or Both. Switching only mutes and unmutes those streams, so the
+// graph is never re-linked and the receiver's capture -- and the picture --
+// never restarts.
 //
 // The laptop is never silenced by muting it: a muted sink's monitor carries
-// silence too, measured on PipeWire.
+// silence too, measured on PipeWire. Only castr's own loopback streams are
+// ever muted.
 package sound
 
 import (

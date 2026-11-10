@@ -12,8 +12,19 @@ import (
 type cast struct {
 	n          int
 	sinkModule modRef
-	loopModule modRef // castr_mix -> this cast's sink; none when the receiver is silent
+	loop       loopback // castr_mix -> this cast's sink, muted while the receiver is silent
 	choice     Choice
+}
+
+// loopback is one of castr's loopbacks out of castr_mix. Each is loaded once
+// and a switch only mutes or unmutes its stream: every load or unload
+// re-links PipeWire's graph, and each re-link added buffering to the path
+// into a receiver's capture that was never drained, until the TV's sound
+// turned robotic, then silent. fresh says its stream still needs its volume
+// and mute set, as castr does right after loading it.
+type loopback struct {
+	modRef
+	fresh bool
 }
 
 // Router owns castr's sound routing for every cast. Its methods are safe to
@@ -36,10 +47,10 @@ type Router struct {
 	casts      map[string]*cast
 	lastN      int // never reused within a process
 	mixModule  modRef
-	laptopLoop modRef // castr_mix -> the laptop; none when the laptop is silent
-	previous   string // the default before the first cast
-	laptop     string // the output the laptop plays through now; "" for none
-	sweep      string // an output whose app streams still need moving into castr_mix
+	laptopLoop loopback // castr_mix -> the laptop, muted while the laptop is silent; none with no laptop output
+	previous   string   // the default before the first cast
+	laptop     string   // the output the laptop plays through now; "" for none
+	sweep      string   // an output whose app streams still need moving into castr_mix
 	// configured is WirePlumber's configured default as it would be without
 	// castr; configuredSeen says whether that output was there at the last
 	// look, so Follow can tell when it appears.
@@ -194,12 +205,14 @@ func (r *Router) dropCast(castID string) error {
 	if err != nil {
 		return err
 	}
-	return errors.Join(unloadRef(r.run, c.loopModule, mods), unloadRef(r.run, c.sinkModule, mods))
+	return errors.Join(unloadRef(r.run, c.loop.modRef, mods), unloadRef(r.run, c.sinkModule, mods))
 }
 
-// Set changes where one cast's sound plays. It only loads or unloads
-// loopbacks: the cast's own sink, which its receiver captures, and the
-// default output are never touched, so the picture never restarts.
+// Set changes where one cast's sound plays. It only mutes or unmutes the
+// streams of castr's loopbacks: no loopback is loaded or unloaded, so the
+// graph is never re-linked, and the cast's own sink, which its receiver
+// captures, and the default output are never touched, so the picture never
+// restarts.
 func (r *Router) Set(castID string, choice Choice) error {
 	choice, err := ParseChoice(string(choice))
 	if err != nil {
@@ -232,13 +245,14 @@ func (r *Router) Choice(castID string) (Choice, bool) {
 	return c.choice, true
 }
 
-// reconcile makes the loopbacks match the choices: a receiver gets sound when
-// its cast is on TV or Both, and the laptop plays when any cast is on Laptop
-// or Both. A loopback that has vanished -- its output went, and it unloaded
-// itself -- is forgotten first, so it is loaded again where it is wanted and
-// its old id, which PipeWire may have handed on, is never unloaded. The
-// laptop loopback is loaded only while the laptop's output exists; until
-// then Follow finds it another.
+// reconcile makes the loopbacks match the choices. Every cast has its
+// loopback, and the laptop has one while its output exists; their streams
+// are muted where the sound should not play: a receiver gets sound when its
+// cast is on TV or Both, and the laptop plays when any cast is on Laptop or
+// Both. A loopback that has vanished -- its output went, and it unloaded
+// itself -- is forgotten first, so it is loaded again and its old id, which
+// PipeWire may have handed on, is never unloaded. Until the laptop's output
+// exists, Follow finds it another.
 func (r *Router) reconcile() error {
 	mods, err := listModules(r.run)
 	if err != nil {
@@ -249,51 +263,122 @@ func (r *Router) reconcile() error {
 		return err
 	}
 	for _, c := range r.casts {
-		if !c.loopModule.in(mods) {
-			c.loopModule = modRef{}
+		if !c.loop.in(mods) {
+			c.loop = loopback{}
 		}
 	}
 	if !r.laptopLoop.in(mods) {
-		r.laptopLoop = modRef{}
+		r.laptopLoop = loopback{}
 	}
 
 	var errs []error
-	laptop := false
 	for _, c := range r.casts {
-		laptop = laptop || c.choice.toLaptop()
-		switch want := c.choice.toReceiver(); {
-		case want && !c.loopModule.loaded():
-			ref, err := loadLoopback(r.run, mixSink+".monitor", castSinkName(c.n), "cast_"+strconv.Itoa(c.n))
-			if err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			c.loopModule = ref
-		case !want && c.loopModule.loaded():
-			if err := unloadModule(r.run, c.loopModule.id); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			c.loopModule = modRef{}
+		if c.loop.loaded() {
+			continue
 		}
+		ref, err := loadLoopback(r.run, mixSink+".monitor", castSinkName(c.n), "cast_"+strconv.Itoa(c.n))
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		c.loop = loopback{modRef: ref, fresh: true}
 	}
-	_, laptopPresent := sinkID(sinks, r.laptop)
-	switch {
-	case laptop && !r.laptopLoop.loaded() && r.laptop != "" && laptopPresent:
+	// A laptop loopback into an output that went has unloaded itself, and
+	// adoptLaptop unloads the one into an output the laptop left.
+	if _, present := sinkID(sinks, r.laptop); present && r.laptop != "" && !r.laptopLoop.loaded() {
 		ref, err := loadLoopback(r.run, mixSink+".monitor", r.laptop, "laptop")
 		if err != nil {
 			errs = append(errs, err)
 		} else {
-			r.laptopLoop = ref
+			r.laptopLoop = loopback{modRef: ref, fresh: true}
 		}
-	case !laptop && r.laptopLoop.loaded():
-		if err := unloadModule(r.run, r.laptopLoop.id); err != nil {
-			errs = append(errs, err)
-		} else {
-			r.laptopLoop = modRef{}
+	}
+	return errors.Join(append(errs, r.applyMutes())...)
+}
+
+// applyMutes mutes each loopback's stream where the sound should not play,
+// and unmutes it where it should. A fresh one is also set to 100%: what
+// WirePlumber may remember for it is castr's, never the user's. Any other
+// stream is left alone, and a real output never muted: a receiver may be
+// capturing it. A stream pactl does not list yet is set on the next call.
+func (r *Router) applyMutes() error {
+	inputs, err := listSinkInputs(r.run)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	laptop := false
+	for _, c := range r.casts {
+		laptop = laptop || c.choice.toLaptop()
+		errs = append(errs, r.applyMute(inputs, &c.loop, !c.choice.toReceiver()))
+	}
+	errs = append(errs, r.applyMute(inputs, &r.laptopLoop, !laptop))
+	return errors.Join(errs...)
+}
+
+func (r *Router) applyMute(inputs []sinkInput, l *loopback, mute bool) error {
+	if !l.loaded() {
+		return nil
+	}
+	in, ok := streamOf(inputs, l.id)
+	if !ok {
+		return nil
+	}
+	if l.fresh {
+		if err := setStreamFullVolume(r.run, in.index); err != nil {
+			return err
+		}
+	}
+	if l.fresh || in.mute != mute {
+		if err := setStreamMute(r.run, in.index, mute); err != nil {
+			return err
+		}
+	}
+	l.fresh = false
+	return nil
+}
+
+// keepCaptures moves a receiver's capture back onto its cast's output when
+// something moved it: once it was found on castr_mix.monitor, and the TV got
+// every laptop sound whatever the choice. A cast's capture -- the helper's,
+// or castr's own for a Chromecast -- is the stream that targets its output
+// (target.object); a stream a module owns is never moved.
+func (r *Router) keepCaptures() error {
+	sources, err := listSources(r.run)
+	if err != nil {
+		return err
+	}
+	outputs, err := listSourceOutputs(r.run)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, c := range r.casts {
+		name := castSinkName(c.n)
+		monitor := name + ".monitor"
+		id, ok := sinkID(sources, monitor)
+		if !ok {
+			continue
+		}
+		for _, o := range outputs {
+			if o.owner >= 0 || (o.target != name && o.target != monitor) || o.source == id || !listed(sources, o.source) {
+				continue
+			}
+			errs = append(errs, moveSourceOutput(r.run, o.index, monitor))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// listed reports whether a source with this id is listed: a stream not yet
+// linked to one is left for WirePlumber to link by its target.
+func listed(sources []sink, id int) bool {
+	for _, s := range sources {
+		if s.id == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Detach ends one cast's routing. The last detach restores the laptop. A cast
@@ -324,6 +409,9 @@ func (r *Router) Detach(castID string) error {
 //   - When the laptop's output vanished (the default stays castr_mix, so
 //     nothing else would say), the laptop moves to the previous default, or
 //     else to any real output, or else to none.
+//   - Every loopback stream muted or unmuted from outside -- in pavucontrol,
+//     or by a mute WirePlumber remembered -- is set back as the choices say.
+//   - A cast's capture moved off its cast's output is moved back.
 //
 // Only a castr_mix confirmed missing ends the routing: Follow then restores
 // and returns an error saying the routing was lost, and every cast has lost
@@ -346,7 +434,9 @@ func (r *Router) Follow() error {
 	if err := r.follow(sinks); err != nil {
 		return err
 	}
-	return r.reconcile() // retries a loopback an earlier failure left out
+	// reconcile retries a loopback an earlier failure left out, and puts
+	// back a mute changed from outside.
+	return errors.Join(r.reconcile(), r.keepCaptures())
 }
 
 func (r *Router) follow(sinks []sink) error {
@@ -436,8 +526,9 @@ func laptopFallback(sinks []sink, previous string) string {
 }
 
 // adoptLaptop makes name the laptop's output, recording it first so that a
-// restore after a crash goes back to it. The laptop loopback, if wanted, is
-// rebuilt there before the old one goes. The old one is unloaded only if it
+// restore after a crash goes back to it. The laptop loopback is rebuilt
+// there, muted as the choices say, before the old one goes; the casts'
+// loopbacks are left as they are. The old one is unloaded only if it
 // is still listed as castr loaded it: when its output vanished it unloaded
 // itself, and the new loopback has most likely just been given its id.
 func (r *Router) adoptLaptop(name string) error {
@@ -446,7 +537,7 @@ func (r *Router) adoptLaptop(name string) error {
 	}
 	r.laptop = name
 	old := r.laptopLoop
-	r.laptopLoop = modRef{}
+	r.laptopLoop = loopback{}
 	err := r.reconcile()
 	if !old.loaded() {
 		return err
@@ -455,7 +546,7 @@ func (r *Router) adoptLaptop(name string) error {
 	if listErr != nil {
 		return errors.Join(err, listErr)
 	}
-	return errors.Join(err, unloadRef(r.run, old, mods))
+	return errors.Join(err, unloadRef(r.run, old.modRef, mods))
 }
 
 // save writes the state file for the routing as it is, with laptop as the
@@ -509,7 +600,7 @@ func (r *Router) restoreLocked() error {
 	err := restore(r.run, r.stateDir, r.state(r.laptop))
 
 	r.casts = map[string]*cast{}
-	r.mixModule, r.laptopLoop = modRef{}, modRef{}
+	r.mixModule, r.laptopLoop = modRef{}, loopback{}
 	r.previous, r.laptop, r.sweep = "", "", ""
 	r.configured, r.configuredSeen, r.history = configuredDefault{}, false, nil
 	return err

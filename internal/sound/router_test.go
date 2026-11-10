@@ -33,7 +33,21 @@ type fakeModule struct {
 type fakeInput struct {
 	index, sink int
 	owner       int // 0 for an app stream
+	mute        bool
+	volume      string
 }
+
+// fakeOutput is a source-output: a stream recording from a source, such as
+// a receiver's capture of its cast's monitor.
+type fakeOutput struct {
+	index, source int
+	owner         int    // 0 for a client's stream
+	target        string // its target.object property; "" for none
+}
+
+// micSource is the id of the one source that is not a sink's monitor. A
+// monitor's id is its sink's, as pipewire-pulse lists them.
+const micSource = 7
 
 type fakePulse struct {
 	sinks   []fakeSink
@@ -47,6 +61,15 @@ type fakePulse struct {
 	nextMod  int
 	freeMods []int
 	calls    [][]string
+	outputs  []fakeOutput
+	// streamOwners is the args of the module that owned each sink-input
+	// ever created, by index: a test can tell castr's own streams from
+	// others' after they are gone.
+	streamOwners map[int]string
+	// rememberedMute and rememberedVolume are what WirePlumber would restore
+	// onto a new loopback stream it remembers by media.name.
+	rememberedMute   bool
+	rememberedVolume string
 
 	defaultErr error
 	defaultOut *string // overrides get-default-sink's output when set
@@ -75,7 +98,7 @@ type fakePulse struct {
 }
 
 func newFakePulse() *fakePulse {
-	f := &fakePulse{nextID: 100, nextMod: 0x20000000, def: realSink}
+	f := &fakePulse{nextID: 100, nextMod: 0x20000000, def: realSink, streamOwners: map[int]string{}, rememberedVolume: "100%"}
 	f.setConfigured(realSink)
 	f.addSink(realSink, 0)
 	// Modules that are not castr's. Neither may ever be unloaded. The first
@@ -131,6 +154,37 @@ func (f *fakePulse) sinkID(name string) int {
 		}
 	}
 	return -1
+}
+
+// sourceID is a source's id by name: a sink's monitor, or the mic.
+func (f *fakePulse) sourceID(name string) int {
+	if name == "mic" {
+		return micSource
+	}
+	if sink, ok := strings.CutSuffix(name, ".monitor"); ok {
+		return f.sinkID(sink)
+	}
+	return -1
+}
+
+// addCapture adds a client's stream recording from source, with target as
+// its target.object.
+func (f *fakePulse) addCapture(source, target string) int {
+	idx := f.id()
+	f.outputs = append(f.outputs, fakeOutput{index: idx, source: f.sourceID(source), target: target})
+	return idx
+}
+
+func (f *fakePulse) captureSource(idx int) string {
+	for _, o := range f.outputs {
+		if o.index == idx {
+			if o.source == micSource {
+				return "mic"
+			}
+			return f.sinkName(o.source) + ".monitor"
+		}
+	}
+	return ""
 }
 
 func (f *fakePulse) sinkName(id int) string {
@@ -344,6 +398,35 @@ func (f *fakePulse) run(name string, args ...string) (string, error) {
 			fmt.Fprintf(&b, "%d\t%s\tPipeWire\tfloat32le 2ch 48000Hz\tSUSPENDED\n", s.id, s.name)
 		}
 		return b.String(), nil
+	case cmd == "list short sources":
+		var b strings.Builder
+		fmt.Fprintf(&b, "%d\tmic\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n", micSource)
+		for _, s := range f.sinks {
+			fmt.Fprintf(&b, "%d\t%s.monitor\tPipeWire\tfloat32le 2ch 48000Hz\tSUSPENDED\n", s.id, s.name)
+		}
+		return b.String(), nil
+	case cmd == "--format=json list source-outputs":
+		type out struct {
+			Index  int               `json:"index"`
+			Source int               `json:"source"`
+			Owner  *string           `json:"owner_module"`
+			Props  map[string]string `json:"properties"`
+		}
+		list := []out{}
+		for _, o := range f.outputs {
+			var owner *string
+			if o.owner != 0 {
+				s := strconv.Itoa(o.owner)
+				owner = &s
+			}
+			props := map[string]string{"media.name": "capture"}
+			if o.target != "" {
+				props["target.object"] = o.target
+			}
+			list = append(list, out{Index: o.index, Source: o.source, Owner: owner, Props: props})
+		}
+		raw, _ := json.Marshal(list)
+		return string(raw), nil
 	case cmd == "list short modules":
 		var b strings.Builder
 		for _, m := range f.modules {
@@ -355,6 +438,7 @@ func (f *fakePulse) run(name string, args ...string) (string, error) {
 			Index int     `json:"index"`
 			Sink  int     `json:"sink"`
 			Owner *string `json:"owner_module"`
+			Mute  bool    `json:"mute"`
 		}
 		out := []in{}
 		for _, i := range f.inputs {
@@ -363,7 +447,7 @@ func (f *fakePulse) run(name string, args ...string) (string, error) {
 				s := strconv.Itoa(i.owner)
 				owner = &s
 			}
-			out = append(out, in{Index: i.index, Sink: i.sink, Owner: owner})
+			out = append(out, in{Index: i.index, Sink: i.sink, Owner: owner, Mute: i.mute})
 		}
 		raw, _ := json.Marshal(out)
 		return string(raw), nil
@@ -382,6 +466,40 @@ func (f *fakePulse) run(name string, args ...string) (string, error) {
 			return "", errors.New("No such entity")
 		}
 		return "", nil
+	case "set-sink-input-mute", "set-sink-input-volume":
+		idx, _ := strconv.Atoi(args[1])
+		for i := range f.inputs {
+			if f.inputs[i].index != idx {
+				continue
+			}
+			if args[0] == "set-sink-input-volume" {
+				f.inputs[i].volume = args[2]
+				return "", nil
+			}
+			switch args[2] {
+			case "1":
+				f.inputs[i].mute = true
+			case "0":
+				f.inputs[i].mute = false
+			default:
+				return "", fmt.Errorf("bad mute %q", args[2])
+			}
+			return "", nil
+		}
+		return "", errors.New("No such entity")
+	case "move-source-output":
+		idx, _ := strconv.Atoi(args[1])
+		src := f.sourceID(args[2])
+		if src < 0 {
+			return "", errors.New("No such entity")
+		}
+		for i := range f.outputs {
+			if f.outputs[i].index == idx {
+				f.outputs[i].source = src
+				return "", nil
+			}
+		}
+		return "", errors.New("No such entity")
 	case "set-default-sink":
 		if f.sinkID(args[1]) < 0 {
 			return "", errors.New("No such entity")
@@ -425,7 +543,10 @@ func (f *fakePulse) loadModule(args []string) (string, error) {
 			f.freeMods = append(f.freeMods, id)
 			return "", errors.New("bad loopback")
 		}
-		f.inputs = append(f.inputs, fakeInput{index: f.id(), sink: f.sinkID(kv["sink"]), owner: id})
+		idx := f.id()
+		f.inputs = append(f.inputs, fakeInput{index: idx, sink: f.sinkID(kv["sink"]), owner: id,
+			mute: f.rememberedMute, volume: f.rememberedVolume})
+		f.streamOwners[idx] = strings.Join(args[1:], " ")
 	default:
 		f.freeMods = append(f.freeMods, id)
 		return "", errors.New("unknown module")
@@ -468,6 +589,43 @@ func (f *fakePulse) hasLoopback(source, sink string) bool {
 		}
 	}
 	return false
+}
+
+// loopStream returns the stream of castr's loopback from castr_mix into
+// sink, failing the test when there is none.
+func (f *fakePulse) loopStream(t *testing.T, sink string) fakeInput {
+	t.Helper()
+	want := "source=castr_mix.monitor sink=" + sink + " "
+	for _, m := range f.modules {
+		if m.name != "module-loopback" || !strings.HasPrefix(m.args, want) {
+			continue
+		}
+		for _, i := range f.inputs {
+			if i.owner == m.id {
+				return i
+			}
+		}
+		t.Fatalf("the loopback into %s has no stream", sink)
+	}
+	t.Fatalf("no loopback castr_mix.monitor -> %s", sink)
+	return fakeInput{}
+}
+
+// plays reports whether castr_mix's sound reaches sink: its loopback is
+// there and its stream is not muted.
+func (f *fakePulse) plays(t *testing.T, sink string) bool {
+	t.Helper()
+	return !f.loopStream(t, sink).mute
+}
+
+// setStreamMute mutes or unmutes a stream from outside castr, as the user
+// can in pavucontrol.
+func (f *fakePulse) setStreamMute(idx int, mute bool) {
+	for i := range f.inputs {
+		if f.inputs[i].index == idx {
+			f.inputs[i].mute = mute
+		}
+	}
 }
 
 // checkLoopbacksNeverMove: a castr loopback PipeWire relinks after its
@@ -553,7 +711,8 @@ func isChanging(c []string) bool {
 		return len(c) > 5 || slices.Contains(c, "-d") // a write or a delete
 	}
 	switch c[1] {
-	case "load-module", "unload-module", "set-sink-volume", "set-sink-mute", "set-default-sink", "move-sink-input":
+	case "load-module", "unload-module", "set-sink-volume", "set-sink-mute", "set-default-sink", "move-sink-input",
+		"set-sink-input-mute", "set-sink-input-volume", "move-source-output":
 		return true
 	}
 	return false
@@ -618,11 +777,11 @@ func TestAttachRoutesTheLaptopIntoCastrAndTheCastStartsOnTV(t *testing.T) {
 		t.Errorf("default is %s, want castr_mix", f.def)
 	}
 	f.allAppsOn(t, "castr_mix")
-	if !f.hasLoopback("castr_mix.monitor", "castr_cast_1") {
-		t.Error("no loopback castr_mix.monitor -> castr_cast_1")
+	if !f.plays(t, "castr_cast_1") {
+		t.Error("castr_cast_1 gets no sound")
 	}
-	if f.hasLoopback("castr_mix.monitor", realSink) {
-		t.Error("a loopback to the real sink exists, so the laptop is not silent")
+	if f.plays(t, realSink) {
+		t.Error("the laptop loopback is not muted, so the laptop is not silent")
 	}
 	f.checkLoopbacksNeverMove(t)
 	if src != "castr_cast_1.monitor" {
@@ -720,23 +879,23 @@ func TestTheChoicesCombineAcrossCasts(t *testing.T) {
 
 	mustSet(t, r, "airplay:A", Laptop)
 	mustSet(t, r, "airplay:B", TV)
-	if !f.hasLoopback("castr_mix.monitor", realSink) {
-		t.Error("A=laptop: no laptop loopback")
+	if !f.plays(t, realSink) {
+		t.Error("A=laptop: the laptop is silent")
 	}
-	if f.hasLoopback("castr_mix.monitor", "castr_cast_1") {
+	if f.plays(t, "castr_cast_1") {
 		t.Error("A=laptop: A's receiver still gets sound")
 	}
-	if !f.hasLoopback("castr_mix.monitor", "castr_cast_2") {
+	if !f.plays(t, "castr_cast_2") {
 		t.Error("A=laptop: B's receiver lost its sound")
 	}
 
 	mustSet(t, r, "airplay:A", TV)
-	if f.hasLoopback("castr_mix.monitor", realSink) {
+	if f.plays(t, realSink) {
 		t.Error("both tv: the laptop still plays")
 	}
 
 	mustSet(t, r, "airplay:A", Both)
-	if !f.hasLoopback("castr_mix.monitor", "castr_cast_1") || !f.hasLoopback("castr_mix.monitor", realSink) {
+	if !f.plays(t, "castr_cast_1") || !f.plays(t, realSink) {
 		t.Error("A=both: want A's receiver and the laptop to play")
 	}
 	f.checkLoopbacksNeverMove(t)
@@ -777,8 +936,9 @@ func TestSwitchingNeverTouchesTheCastSinks(t *testing.T) {
 	}
 	for _, c := range changes {
 		switch {
-		case c[1] == "load-module" && c[2] == "module-loopback":
-		case c[1] == "unload-module" && !castSinks[c[2]]:
+		case c[1] == "set-sink-input-mute":
+		case c[1] == "unload-module" && castSinks[c[2]]:
+			t.Errorf("switching unloaded a cast sink: %v", c)
 		default:
 			t.Errorf("switching ran %v", c)
 		}
@@ -994,7 +1154,8 @@ func TestFollowGivesUpWhenCastrMixDisappears(t *testing.T) {
 func TestFollowSurvivesATransientPactlFailure(t *testing.T) {
 	// Only a confirmed-missing castr_mix ends the routing; anything else is
 	// retried on the next tick.
-	for _, cmd := range []string{"list short sinks", "get-default-sink", "--format=json list sink-inputs"} {
+	for _, cmd := range []string{"list short sinks", "get-default-sink", "--format=json list sink-inputs",
+		"list short sources", "--format=json list source-outputs"} {
 		t.Run(cmd, func(t *testing.T) {
 			f := newFakePulse()
 			dir := t.TempDir()
@@ -1763,8 +1924,11 @@ func TestNothingEverChangesARealOutputsVolume(t *testing.T) {
 		if len(c) > 2 && (c[1] == "set-sink-volume" || c[1] == "set-sink-mute") && !isCastrName(c[2]) {
 			t.Errorf("touched a real output's volume: %v", c)
 		}
-		if len(c) > 1 && (c[1] == "set-sink-input-volume" || c[1] == "set-sink-input-mute") {
-			t.Errorf("touched a stream's volume: %v", c)
+		// castr's own loopback streams are castr's to mute; no other stream is.
+		if len(c) > 2 && (c[1] == "set-sink-input-volume" || c[1] == "set-sink-input-mute") {
+			if idx, _ := strconv.Atoi(c[2]); !isCastrModule(f.streamOwners[idx]) {
+				t.Errorf("touched a stream's volume: %v", c)
+			}
 		}
 	}
 }
@@ -1802,7 +1966,7 @@ func TestLoopbacksHaveStableNames(t *testing.T) {
 			}
 		}
 	}
-	if loads < 4 {
+	if loads < 3 {
 		t.Fatalf("only %d loopback loads", loads)
 	}
 	if len(names) != 2 || !names["castr_loop_laptop"] || !names["castr_loop_cast"] {
