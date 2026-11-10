@@ -281,8 +281,13 @@ func (b *Backend) awaitReady(ctx context.Context, cs *castSession) error {
 // when the receiver was on another subnet with zero firewall drops, and twice
 // when the child had already printed the real reason.
 func (b *Backend) failureMessage(cs *castSession, exited bool) string {
-	// Checked before anything else, and on BOTH paths: whether the child
-	// timed out or exited, if it told us why then that is the answer.
+	// A refusal first: the helper exits on it, and its own advice is for a
+	// command line castr users never see.
+	if msg := refusalMessage(cs.device, cs.scan); msg != "" {
+		return msg
+	}
+	// Then a portal failure, on BOTH paths: whether the child timed out or
+	// exited, if it told us why then that is the answer.
 	if failure := cs.scan.PortalFailure(); failure != "" {
 		return fmt.Sprintf(
 			"%s: screen capture never started because the screen-share prompt "+
@@ -460,10 +465,13 @@ func (b *Backend) failAfterPin(cs *castSession) {
 
 	_ = b.undo(cs)
 
-	msg := fmt.Sprintf(
-		"%s stopped waiting for its pairing code. If the receiver never showed "+
-			"one, check AirPlay access control on it. (%s)",
-		cs.device.Name, cs.scan.Tail(160))
+	msg := refusalMessage(cs.device, cs.scan)
+	if msg == "" {
+		msg = fmt.Sprintf(
+			"%s stopped waiting for its pairing code. If the receiver never showed "+
+				"one, check AirPlay access control on it. (%s)",
+			cs.device.Name, cs.scan.Tail(160))
+	}
 	b.emit(cs.device, session.Failed, msg)
 }
 

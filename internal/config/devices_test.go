@@ -1102,3 +1102,75 @@ func TestSyncingAtStartStillReplacesADamagedFile(t *testing.T) {
 		t.Error("the damaged extend file was not repaired at start")
 	}
 }
+
+// twoReceivers holds the office TV, paired with a code and bound to its
+// address, and a second receiver that must survive unpairing the first.
+const twoReceivers = `{"FE:5C:81:22:50:38":{"pairing_id":"id-1","ed25519_public":"pub-1",` +
+	`"ed25519_seed":"seed-1","receiver_id":"rid-1","receiver_ed25519_public":"rpub-1",` +
+	`"paired_at":"2026-11-06T10:00:00Z","pairing_code":"pin","receiver_address":"10.10.10.231",` +
+	`"restore_token":"token-office"},` +
+	`"42:56:35:AF:76:0F":{"pairing_id":"id-2","ed25519_public":"pub-2","ed25519_seed":"seed-2",` +
+	`"restore_token":"token-other"}}`
+
+func TestUnpairingForgetsOneReceiversPairingInEveryMode(t *testing.T) {
+	for _, target := range []string{"FE:5C:81:22:50:38", "fe:5c:81:22:50:38", "10.10.10.231"} {
+		dir := t.TempDir()
+		putCreds(t, CredsPath(dir, "mirror"), twoReceivers)
+		putCreds(t, CredsPath(dir, "extend"), twoReceivers)
+
+		modes, err := ForgetPairing(dir, []string{"mirror", "extend"}, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(modes) != 2 {
+			t.Errorf("%s: forgot in %v, want both modes", target, modes)
+		}
+		for _, mode := range []string{"mirror", "extend"} {
+			creds := readCredsMap(t, CredsPath(dir, mode))
+			office := creds["FE:5C:81:22:50:38"]
+			for _, field := range pairingFields {
+				if _, kept := office[field]; kept {
+					t.Errorf("%s, %s: %s survived unpairing", target, mode, field)
+				}
+			}
+			// Which output to share is not part of a pairing; asking again
+			// would be a second, unrelated surprise.
+			if office["restore_token"] != "token-office" {
+				t.Errorf("%s, %s: the screen-share choice went with the pairing", target, mode)
+			}
+			if creds["42:56:35:AF:76:0F"]["ed25519_seed"] != "seed-2" {
+				t.Errorf("%s, %s: another receiver's pairing was touched", target, mode)
+			}
+		}
+	}
+}
+
+func TestUnpairingAReceiverWithNoPairingChangesNothing(t *testing.T) {
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), twoReceivers)
+
+	modes, err := ForgetPairing(dir, []string{"mirror", "extend"}, "11:22:33:44:55:66")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(modes) != 0 {
+		t.Errorf("forgot in %v, want nothing", modes)
+	}
+	raw, _ := os.ReadFile(CredsPath(dir, "mirror"))
+	if string(raw) != twoReceivers {
+		t.Error("the file was rewritten although nothing matched")
+	}
+}
+
+func TestAnEntryLeftWithNothingIsRemoved(t *testing.T) {
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"),
+		`{"FE:5C:81:22:50:38":{"pairing_id":"id-1","ed25519_public":"pub-1","ed25519_seed":"seed-1"}}`)
+
+	if _, err := ForgetPairing(dir, []string{"mirror"}, "FE:5C:81:22:50:38"); err != nil {
+		t.Fatal(err)
+	}
+	if _, left := readCredsMap(t, CredsPath(dir, "mirror"))["FE:5C:81:22:50:38"]; left {
+		t.Error("an empty entry was left behind")
+	}
+}

@@ -95,6 +95,20 @@ The code is asked for once per receiver; after that castr remembers the pairing.
 HomeKit → Require Code*. Set to **Every Time**, the television demands a new code
 on each connection no matter what castr remembers — choose **First Time Only**.
 
+**If castr refuses an Apple TV it has paired with**, the device answering did
+not prove it is that Apple TV. castr will not cast to it and will not pair with
+it again by itself: a device on the network pretending to be your Apple TV
+would otherwise get your screen. If you reset or replaced the Apple TV, forget
+the old pairing and cast again:
+
+```bash
+castr unpair <id>          # the id from castr list, or the receiver's address
+```
+
+The next cast asks for a new code. **If the television shows no code**, the
+device castr reached is not your Apple TV: stop, and find out what is at that
+address.
+
 ## Installing
 
 ```bash

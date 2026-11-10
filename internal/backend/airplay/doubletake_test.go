@@ -3,6 +3,8 @@ package airplay
 import (
 	"strings"
 	"testing"
+
+	"github.com/mrCode/castr/internal/discovery"
 )
 
 func config() Config {
@@ -391,5 +393,108 @@ func TestTheCodecAndCapAreForwardedOnlyWhenSet(t *testing.T) {
 	capped.MaxSize = "2560x1440"
 	if got := argvString(BuildArgv(capped, "", "10.0.0.5", 7000, "", "")); !strings.Contains(got, "-max-size 2560x1440") {
 		t.Errorf("argv = %q, want -max-size 2560x1440", got)
+	}
+}
+
+// Real refusals, as castr-airplay (doubletake branch castr) prints them.
+var refusals = map[string]string{
+	"identity": "2026/11/10 20:10:42 receiver did not prove its pairing identity: pair-verify " +
+		"signature does not match the saved receiver key; refusing to cast. The device answering " +
+		"as \"Basem's Office\" is not the receiver this machine paired with, or will not prove it. " +
+		"If you reset or replaced that receiver, run again with -pair and enter the code it shows; " +
+		"a receiver that shows no code is not the one you paired with.\n",
+	"password": "2026/11/10 20:10:42 the saved pairing was made with the receiver's pairing " +
+		"password, which is not sent again unless asked; refusing to pair with \"TV\" again " +
+		"automatically. If it is the receiver you paired with, run again with -pair to pair with it again.\n",
+	"streamkey": "2026/11/10 20:10:42 mirror setup failed: no protected way to give the receiver " +
+		"the video key: the control channel is not encrypted and the receiver offered no FairPlay " +
+		"key; run with -no-encrypt to cast to it without video encryption\n",
+	"unstable": "2026/11/10 20:10:42 the receiver named itself \"AA:BB\", then \"CC:DD\" after " +
+		"reconnecting; refusing to cast\n",
+	"saved": "2026/11/10 20:10:42 pair-verify with saved creds failed: connection reset; refusing " +
+		"to replace the saved pairing with an unauthenticated one. If you reset or replaced that " +
+		"receiver, remove its entry from /x/extend.json and connect again.\n",
+	"nopin": "2026/11/10 20:10:42 pairing failed: the receiver will not show a PIN to pair again " +
+		"with (403 Forbidden); if this receiver uses a pairing password rather than an on-screen " +
+		"code, remove its entry from the credentials file and connect again\n",
+	"raw": "2026/11/10 20:10:42 receiver did not prove its pairing identity: it was paired with " +
+		"without a code, but now asks for one; if the receiver really changed, remove its entry " +
+		"from the credentials file and connect again; refusing to cast\n",
+}
+
+func TestEachRefusalIsRecognised(t *testing.T) {
+	want := map[string]refusal{
+		"identity": refusalIdentity, "password": refusalPassword, "streamkey": refusalStreamKey,
+		"unstable": refusalUnstable, "saved": refusalSavedPairing, "nopin": refusalSavedPairing,
+		"raw": refusalIdentity,
+	}
+	for name, line := range refusals {
+		var s Scanner
+		s.Absorb("connected to: TV (model: AppleTV11,1)\n" + line)
+		kind, detail := s.Refusal()
+		if kind != want[name] {
+			t.Errorf("%s: kind = %v, want %v", name, kind, want[name])
+		}
+		if detail == "" || strings.HasPrefix(detail, "2026/") {
+			t.Errorf("%s: detail = %q, want the reason without the log timestamp", name, detail)
+		}
+	}
+}
+
+func TestOrdinaryOutputIsNoRefusal(t *testing.T) {
+	var s Scanner
+	s.Absorb("connected to: TV\nusing saved credentials (file)\nmirror session ready\n")
+	if kind, detail := s.Refusal(); kind != refusalNone || detail != "" {
+		t.Errorf("Refusal() = %v, %q; want none", kind, detail)
+	}
+}
+
+func TestNoRefusalMessageRepeatsAdviceCastrUsersCannotFollow(t *testing.T) {
+	// castr runs the helper itself: its users cannot add -pair or
+	// -no-encrypt, and should not hand-edit a file holding private keys.
+	d := discovery.Device{ID: "airplay:FE:5C:81:22:50:38", Name: "Basem's Office", Address: "10.10.10.231"}
+	for name, line := range refusals {
+		var s Scanner
+		s.Absorb(line)
+		msg := refusalMessage(d, &s)
+		for _, banned := range []string{"-pair", "-no-encrypt", "credentials file", ".json", "run again"} {
+			if strings.Contains(msg, banned) {
+				t.Errorf("%s: message passes on %q: %s", name, banned, msg)
+			}
+		}
+		if !strings.Contains(msg, "Basem's Office") {
+			t.Errorf("%s: message does not name the receiver: %s", name, msg)
+		}
+	}
+}
+
+func TestARefusalThatUnpairingFixesSaysHow(t *testing.T) {
+	d := discovery.Device{ID: "airplay:FE:5C:81:22:50:38", Name: "Basem's Office", Address: "10.10.10.231"}
+	for _, name := range []string{"identity", "password", "saved", "nopin", "raw"} {
+		var s Scanner
+		s.Absorb(refusals[name])
+		if msg := refusalMessage(d, &s); !strings.Contains(msg, "castr unpair airplay:FE:5C:81:22:50:38") {
+			t.Errorf("%s: message does not say how to pair again: %s", name, msg)
+		}
+	}
+	// Unpairing is no answer to these, and suggesting it would teach users
+	// to throw a pairing away whenever something goes wrong.
+	for _, name := range []string{"streamkey", "unstable"} {
+		var s Scanner
+		s.Absorb(refusals[name])
+		if msg := refusalMessage(d, &s); strings.Contains(msg, "unpair") {
+			t.Errorf("%s: message suggests unpairing: %s", name, msg)
+		}
+	}
+}
+
+func TestTheIdentityRefusalKeepsTheWarningAboutAnImpostor(t *testing.T) {
+	// Unpairing from a device that is not the user's TV is exactly what an
+	// impostor needs; the message has to say how to tell.
+	d := discovery.Device{ID: "airplay:FE:5C:81:22:50:38", Name: "Basem's Office", Address: "10.10.10.231"}
+	var s Scanner
+	s.Absorb(refusals["identity"])
+	if msg := refusalMessage(d, &s); !strings.Contains(msg, "shows no code") {
+		t.Errorf("message lost the impostor warning: %s", msg)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/mrCode/castr/internal/discovery"
@@ -402,6 +403,54 @@ func PullPairing(stateDir, mode string, modes []string) error {
 		}
 	}
 	return nil
+}
+
+// ForgetPairing removes castr's pairing with one receiver from every mode's
+// file, so the next cast pairs with it from scratch and asks for a code. This
+// is what castr-airplay means by "remove its entry from the credentials file":
+// the way to pair again with a receiver that was reset or replaced.
+//
+// target names the receiver by device ID, the key it is saved under, or by
+// the address its pairing is bound to (receiver_address), which is how a
+// receiver added by address is known. Only pairingFields go: the
+// restore_token is which output to share, not part of the pairing, and an
+// entry left with nothing is removed. It returns the modes it changed.
+//
+// The caller stops every cast first. A running helper rewrites its whole file
+// from memory when it saves, and would put the pairing back.
+func ForgetPairing(stateDir string, modes []string, target string) ([]string, error) {
+	var changed []string
+	for _, mode := range modes {
+		path := CredsPath(stateDir, mode)
+		creds, err := readCreds(path)
+		if err != nil {
+			return changed, err
+		}
+		touched := false
+		for id, entry := range creds {
+			address, _ := entry["receiver_address"].(string)
+			if !strings.EqualFold(id, target) && (address == "" || address != target) {
+				continue
+			}
+			for _, field := range pairingFields {
+				if _, ok := entry[field]; ok {
+					delete(entry, field)
+					touched = true
+				}
+			}
+			if len(entry) == 0 {
+				delete(creds, id)
+			}
+		}
+		if !touched {
+			continue
+		}
+		if err := writeCreds(path, creds); err != nil {
+			return changed, err
+		}
+		changed = append(changed, mode)
+	}
+	return changed, nil
 }
 
 func readCreds(path string) (map[string]map[string]any, error) {

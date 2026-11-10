@@ -50,6 +50,8 @@ const Usage = `castr — cast this screen to an AirPlay receiver
   castr forget <id>          drop a registered receiver
   castr quit                 stop the background daemon
   castr reset-share [mode]   forget which output to share, so you get asked again
+  castr unpair <id>          forget the pairing with an Apple TV that was reset or
+                             replaced; the next cast asks for a new code
   castr version              print the version
 `
 
@@ -82,6 +84,8 @@ func (a *App) Run(args []string) int {
 		return a.forget(args[1:])
 	case "reset-share":
 		return a.resetShare(args[1:])
+	case "unpair":
+		return a.unpair(args[1:])
 	case "quit":
 		return a.run(a.Client.Quit)
 	case "help", "-h", "--help":
@@ -226,6 +230,63 @@ func (a *App) bar() int {
 	}
 	fmt.Fprintln(a.Out, string(out))
 	return 0
+}
+
+// unpair forgets castr's pairing with one AirPlay receiver, so the next cast
+// pairs with it from scratch. castr-airplay refuses a receiver that cannot
+// prove it is the one paired with, and for one that was reset or replaced
+// this is the way past that -- castr's answer to the helper's own advice
+// (-pair, or editing the credentials file), which castr users cannot follow.
+//
+// It accepts the id castr lists, or the receiver's address: a receiver added
+// by address is saved under the device ID it reports, and found by the
+// address its pairing is bound to.
+//
+// Casts are stopped first, every one of them: a running helper rewrites its
+// mode's whole file from memory when it saves, and would put the pairing
+// straight back, whichever receiver it is casting to.
+func (a *App) unpair(args []string) int {
+	if len(args) != 1 {
+		return a.fail("unpair needs a receiver: castr unpair <id or address>")
+	}
+	target, ok := pairingTarget(args[0])
+	if !ok {
+		return a.fail(fmt.Sprintf("%s is not an AirPlay receiver; only AirPlay receivers are paired", args[0]))
+	}
+
+	if sessions, err := a.Client.Sessions(); err == nil && len(sessions) > 0 {
+		for _, s := range sessions {
+			if err := a.Client.Stop(s.DeviceID); err != nil {
+				return a.fail(fmt.Sprintf("stopping %s first: %v", s.Name, err))
+			}
+		}
+	}
+
+	modes, err := config.ForgetPairing(daemon.StateDir(), session.Modes, target)
+	if err != nil {
+		return a.fail(err.Error())
+	}
+	if len(modes) == 0 {
+		fmt.Fprintf(a.Out, "castr has no pairing with %s; nothing to forget.\n", args[0])
+		return 0
+	}
+	fmt.Fprintf(a.Out, "Forgot the pairing with %s. The next cast to it pairs again: enter the code "+
+		"the receiver shows. If it shows no code, the device castr reached is not that receiver -- "+
+		"stop, and check what is at its address.\n", args[0])
+	return 0
+}
+
+// pairingTarget is what a pairing is found by, for a receiver id or address:
+// the device ID in "airplay:<device id>", or the address in
+// "airplay:manual:<address>" and "airplay:<address>", or a bare address.
+func pairingTarget(id string) (string, bool) {
+	id = strings.TrimSpace(id)
+	if id == "" || strings.HasPrefix(id, "chromecast:") {
+		return "", false
+	}
+	id = strings.TrimPrefix(id, "airplay:")
+	id = strings.TrimPrefix(id, "manual:")
+	return id, id != ""
 }
 
 // resetShare makes the screen-share prompt appear again.

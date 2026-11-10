@@ -1326,3 +1326,18 @@ func TestAHelperThatDiesAfterCaptureStartsIsReportedAsACrash(t *testing.T) {
 		}
 	}
 }
+
+func TestARefusingHelperIsExplainedInCastrsTerms(t *testing.T) {
+	// The helper's own advice -- "run again with -pair" -- is for its own
+	// command line, which castr users never see.
+	h := newHarness(t, refusals["identity"])
+	h.childExits = true
+	err := h.backend.Start(context.Background(), device("airplay:FE:5C:81:22:50:38", "Basem's Office"),
+		session.ModeMirror)
+	if err == nil {
+		t.Fatal("a refused cast reported success")
+	}
+	if !strings.Contains(err.Error(), "castr unpair") || strings.Contains(err.Error(), "-pair") {
+		t.Errorf("error = %q, want castr's advice and not the helper's", err)
+	}
+}
