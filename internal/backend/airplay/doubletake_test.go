@@ -364,3 +364,32 @@ func TestExplicitLatencyIsUsedExactly(t *testing.T) {
 		}
 	}
 }
+
+// Defaults change nothing: with no codec or geometry configured the helper is
+// started exactly as before, and picks its own codec and canvas.
+func TestTheCodecAndCapAreForwardedOnlyWhenSet(t *testing.T) {
+	plain := argvString(BuildArgv(config(), "", "10.0.0.5", 7000, "", ""))
+	if strings.Contains(plain, "-video-codec") || strings.Contains(plain, "-max-size") {
+		t.Errorf("argv = %q, want no -video-codec or -max-size by default", plain)
+	}
+
+	auto := config()
+	auto.Codec = "auto"
+	if got := argvString(BuildArgv(auto, "", "10.0.0.5", 7000, "", "")); strings.Contains(got, "-video-codec") {
+		t.Errorf("argv = %q, want auto left to the helper", got)
+	}
+
+	for _, codec := range []string{"h264", "hevc"} {
+		cfg := config()
+		cfg.Codec = codec
+		if got := argvString(BuildArgv(cfg, "", "10.0.0.5", 7000, "", "")); !strings.Contains(got, "-video-codec "+codec) {
+			t.Errorf("argv = %q, want -video-codec %s", got, codec)
+		}
+	}
+
+	capped := config()
+	capped.MaxSize = "2560x1440"
+	if got := argvString(BuildArgv(capped, "", "10.0.0.5", 7000, "", "")); !strings.Contains(got, "-max-size 2560x1440") {
+		t.Errorf("argv = %q, want -max-size 2560x1440", got)
+	}
+}

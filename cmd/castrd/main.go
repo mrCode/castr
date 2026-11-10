@@ -358,6 +358,8 @@ func newAirPlayBackend(cfg config.Config, stateDir string) *airplay.Backend {
 			Bitrate:         cfg.AirPlay.Bitrate,
 			TargetLatencyMS: cfg.AirPlay.TargetLatencyMS,
 			Audio:           cfg.AirPlay.Audio,
+			Codec:           cfg.Capture.Codec,
+			MaxSize:         cfg.Capture.MaxSize(),
 		},
 		Hypr:         hyprctl,
 		ReadyTimeout: time.Duration(cfg.AirPlay.ReadyTimeout * float64(time.Second)),

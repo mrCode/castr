@@ -97,6 +97,7 @@ type fakeHypr struct {
 	monitors   []fakeMonitor
 	failNew    bool
 	failRemove bool
+	creates    int // how many times an output was asked for
 }
 
 type fakeMonitor struct {
@@ -123,6 +124,7 @@ func (f *fakeHypr) run(name string, args ...string) (string, error) {
 		return "[" + strings.Join(parts, ",") + "]", nil
 
 	case strings.HasPrefix(joined, "output create headless"):
+		f.creates++
 		if f.failNew {
 			return "could not create output", nil // exit 0, like the real thing
 		}
@@ -210,6 +212,13 @@ func (f *fakeHypr) mirrors(name string) string {
 		return ""
 	}
 	return f.monitors[i].mirrorOf
+}
+
+// created reports how many outputs the compositor was asked to create.
+func (f *fakeHypr) created() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.creates
 }
 
 func (f *fakeHypr) has(name string) bool {
@@ -912,5 +921,31 @@ func TestStartingACastCapturesItsOwnSound(t *testing.T) {
 	}
 	if got := strings.Join(h.argvs[0], " "); !strings.Contains(got, "-audio-source castr_cast_1.monitor") {
 		t.Errorf("doubletake was started without the cast's sound:\n%s", got)
+	}
+}
+
+// A geometry caps mirror too -- through the helper, which scales the panel
+// itself. Mirror still creates no output: the portal never offers one.
+func TestGeometryCapsMirrorWithoutCreatingAnOutput(t *testing.T) {
+	h := newHarness(t, readyOutput)
+	h.backend.Config.MaxSize = "2560x1440"
+
+	if err := h.backend.Start(context.Background(), device("tv", "TV"), session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+
+	if h.hypr.has(hypr.OutputMirror) || h.hypr.has(hypr.OutputExtend) {
+		t.Error("mirror created a virtual output")
+	}
+	if n := h.hypr.created(); n != 0 {
+		t.Errorf("the compositor was asked to create %d output(s) for mirror", n)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.argvs) == 0 {
+		t.Fatal("the helper was never started")
+	}
+	if got := strings.Join(h.argvs[0], " "); !strings.Contains(got, "-max-size 2560x1440") {
+		t.Errorf("the helper was started without the cap:\n%s", got)
 	}
 }

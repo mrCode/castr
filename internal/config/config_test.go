@@ -56,6 +56,8 @@ func TestEveryDocumentedKeyIsActuallyRead(t *testing.T) {
 [capture]
 fps = 50
 encoder = "vaapi"
+geometry = "2560x1440@60"
+codec = "hevc"
 
 [airplay]
 port_range = "50000-50020"
@@ -71,7 +73,8 @@ audio = false
 	}
 
 	want := Config{
-		Capture: Capture{FPS: 50, Encoder: "vaapi"},
+		Capture: Capture{FPS: 50, Encoder: "vaapi", Geometry: "2560x1440@60",
+			GeometrySet: true, Codec: "hevc"},
 		AirPlay: AirPlay{PortRange: "50000-50020", Bitrate: 8000, Code: "1234",
 			HideVAPostproc: false, ReadyTimeout: 90, TargetLatencyMS: 90, Audio: false},
 		// Untouched by this file, so it keeps the defaults: settings are
@@ -280,5 +283,130 @@ func TestExplicitLatencyIsKept(t *testing.T) {
 	cfg, err := Load(write(t, "[airplay]\ntarget_latency_ms = 120\n"))
 	if err != nil || cfg.AirPlay.TargetLatencyMS != 120 {
 		t.Errorf("got %d, %v; want 120, nil", cfg.AirPlay.TargetLatencyMS, err)
+	}
+}
+
+func TestGeometryDefaultsToToday(t *testing.T) {
+	// Defaults change nothing: with no geometry in the file, extend stays at
+	// 1920x1080@60 and the helper is given no cap.
+	if got := Default().Capture.Geometry; got != "1920x1080@60" {
+		t.Errorf("default geometry = %q, want 1920x1080@60", got)
+	}
+
+	cfg, err := Load(write(t, "[capture]\nfps = 30\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Capture.Geometry != "1920x1080@60" {
+		t.Errorf("geometry = %q, want the default", cfg.Capture.Geometry)
+	}
+	if got := cfg.Capture.MaxSize(); got != "" {
+		t.Errorf("max size = %q for a file that never mentioned geometry, want none", got)
+	}
+}
+
+func TestAnExplicitGeometryIsKeptAndCapsTheStream(t *testing.T) {
+	cfg, err := Load(write(t, "[capture]\ngeometry = \"2560x1440@120\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Capture.Geometry != "2560x1440@120" {
+		t.Errorf("geometry = %q, want the value from the file", cfg.Capture.Geometry)
+	}
+	if got := cfg.Capture.MaxSize(); got != "2560x1440" {
+		t.Errorf("max size = %q, want 2560x1440", got)
+	}
+
+	// Written out as the default is still the user's choice, and caps.
+	cfg, err = Load(write(t, "[capture]\ngeometry = \"1920x1080@60\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Capture.MaxSize(); got != "1920x1080" {
+		t.Errorf("max size = %q, want 1920x1080 for an explicit geometry", got)
+	}
+}
+
+func TestParseGeometry(t *testing.T) {
+	g, err := ParseGeometry("3840x2160@30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g != (Geometry{Width: 3840, Height: 2160, Refresh: 30}) {
+		t.Errorf("parsed %+v", g)
+	}
+	if got := g.String(); got != "3840x2160@30" {
+		t.Errorf("String() = %q, want WxH@R", got)
+	}
+	for _, edge := range []string{"640x360@24", "7680x4320@240"} {
+		if _, err := ParseGeometry(edge); err != nil {
+			t.Errorf("%q rejected: %v", edge, err)
+		}
+	}
+	for _, bad := range []string{"", "auto", "4k", "1920x1080", "1920x1080@", "x1080@60",
+		"639x360@60", "640x359@60", "7681x4320@60", "640x4321@60", "640x360@23",
+		"640x360@241", "1920x1080@59.94", "+1920x1080@60", "1920x-1080@60"} {
+		if _, err := ParseGeometry(bad); err == nil {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+}
+
+func TestAnInvalidGeometryFallsBackWithAWarning(t *testing.T) {
+	// Repaired, not rejected: a bad geometry must not throw away the encoder
+	// in the same file, and must not stop anyone casting.
+	for _, bad := range []string{"4k", "100x100@60", "1920x1080@500", "auto"} {
+		t.Run(bad, func(t *testing.T) {
+			cfg, err := Load(write(t,
+				"[capture]\nencoder = \"vaapi\"\ngeometry = \""+bad+"\"\n"))
+
+			if cfg.Capture.Geometry != "1920x1080@60" {
+				t.Errorf("geometry = %q, want the 1920x1080@60 fallback", cfg.Capture.Geometry)
+			}
+			if got := cfg.Capture.MaxSize(); got != "" {
+				t.Errorf("max size = %q, want none after falling back", got)
+			}
+			if cfg.Capture.Encoder != "vaapi" {
+				t.Errorf("encoder = %q, want the rest of the file kept", cfg.Capture.Encoder)
+			}
+			if err == nil {
+				t.Fatal("the fallback was silent; the user should be told")
+			}
+			if !strings.Contains(err.Error(), `"`+bad+`"`) {
+				t.Errorf("note = %q, want it to name the value %q", err, bad)
+			}
+		})
+	}
+}
+
+func TestCodecIsValidatedAndDefaultsToAuto(t *testing.T) {
+	if got := Default().Capture.Codec; got != "auto" {
+		t.Errorf("default codec = %q, want auto", got)
+	}
+
+	for in, want := range map[string]string{
+		"auto": "auto", "h264": "h264", "hevc": "hevc", "HEVC": "hevc", "H264": "h264",
+	} {
+		cfg, err := Load(write(t, "[capture]\ncodec = \""+in+"\"\n"))
+		if err != nil {
+			t.Errorf("codec %q: %v", in, err)
+		}
+		if cfg.Capture.Codec != want {
+			t.Errorf("codec %q gave %q, want %q", in, cfg.Capture.Codec, want)
+		}
+	}
+
+	cfg, err := Load(write(t, "[capture]\nencoder = \"vaapi\"\ncodec = \"av1\"\n"))
+	if cfg.Capture.Codec != "auto" {
+		t.Errorf("codec = %q, want the auto fallback", cfg.Capture.Codec)
+	}
+	if cfg.Capture.Encoder != "vaapi" {
+		t.Errorf("encoder = %q, want the rest of the file kept", cfg.Capture.Encoder)
+	}
+	if err == nil {
+		t.Fatal("the fallback was silent; the user should be told")
+	}
+	if !strings.Contains(err.Error(), `"av1"`) {
+		t.Errorf("note = %q, want it to name the value", err)
 	}
 }

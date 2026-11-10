@@ -87,6 +87,13 @@ type Config struct {
 	// then picks AutoLatencyNoSoundMS or AutoLatencyWithSoundMS by Audio.
 	TargetLatencyMS int
 	Audio           bool
+	// Codec is -video-codec: "h264" or "hevc". "auto", or empty, passes
+	// nothing and leaves the helper to choose.
+	Codec string
+	// MaxSize is -max-size, "WxH": the largest canvas the helper may
+	// negotiate. It only ever shrinks the receiver's canvas, keeping its
+	// aspect. Empty passes nothing.
+	MaxSize string
 }
 
 // hwaccel maps castr's encoder vocabulary onto doubletake's.
@@ -148,6 +155,12 @@ func BuildArgv(cfg Config, deviceID, address string, port int, credsPath, audioS
 		}
 	}
 	argv = append(argv, "-target-latency-ms", strconv.Itoa(latency))
+	if cfg.Codec != "" && cfg.Codec != "auto" {
+		argv = append(argv, "-video-codec", cfg.Codec)
+	}
+	if cfg.MaxSize != "" {
+		argv = append(argv, "-max-size", cfg.MaxSize)
+	}
 	if !cfg.Audio {
 		argv = append(argv, "-no-audio")
 	} else if audioSource != "" {

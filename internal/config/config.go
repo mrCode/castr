@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -20,6 +21,107 @@ var Encoders = []string{"auto", "vaapi", "nvenc", "x264"}
 type Capture struct {
 	FPS     int    `toml:"fps"`
 	Encoder string `toml:"encoder"`
+
+	// Geometry is the stream's size, "WxH@R". Extend creates its virtual
+	// output at it; mirror and extend both pass its size to castr-airplay as a
+	// cap on the canvas it negotiates with the receiver.
+	Geometry string `toml:"geometry"`
+
+	// GeometrySet records that the config FILE chose the geometry. Only then
+	// is the cap passed: a file that never mentions geometry must start the
+	// helper exactly as before, and the default is not a choice the user made.
+	GeometrySet bool `toml:"-"`
+
+	// Codec is "auto", "h264" or "hevc". auto leaves the choice to the helper.
+	Codec string `toml:"codec"`
+}
+
+// Codecs castr knows how to ask castr-airplay for.
+var Codecs = []string{"auto", "h264", "hevc"}
+
+// DefaultGeometry is the extend output's size when none is configured, and
+// the size castr has always used.
+const DefaultGeometry = "1920x1080@60"
+
+// The geometry limits. Width and height span 640x360 to 8K; anything outside
+// them is a typo, not a display.
+const (
+	minWidth, maxWidth     = 640, 7680
+	minHeight, maxHeight   = 360, 4320
+	minRefresh, maxRefresh = 24, 240
+)
+
+// Geometry is a stream size and refresh rate.
+type Geometry struct{ Width, Height, Refresh int }
+
+// String gives the geometry as "WxH@R", the form Hyprland takes as a mode.
+func (g Geometry) String() string {
+	return fmt.Sprintf("%dx%d@%d", g.Width, g.Height, g.Refresh)
+}
+
+// ParseGeometry reads "WxH@R", all integers within the limits above.
+//
+// There is no "auto": a real Apple TV 4K answers /info with no displays until
+// a media session exists, so castr cannot learn the receiver's canvas before
+// it has to size the output.
+func ParseGeometry(s string) (Geometry, error) {
+	size, refresh, ok := strings.Cut(strings.TrimSpace(s), "@")
+	if !ok {
+		return Geometry{}, fmt.Errorf("geometry %q must look like 1920x1080@60", s)
+	}
+	width, height, ok := strings.Cut(size, "x")
+	if !ok {
+		return Geometry{}, fmt.Errorf("geometry %q must look like 1920x1080@60", s)
+	}
+	var g Geometry
+	for _, field := range []struct {
+		text     string
+		into     *int
+		name     string
+		low, top int
+	}{
+		{width, &g.Width, "width", minWidth, maxWidth},
+		{height, &g.Height, "height", minHeight, maxHeight},
+		{refresh, &g.Refresh, "refresh rate", minRefresh, maxRefresh},
+	} {
+		n, ok := digits(field.text)
+		if !ok {
+			return Geometry{}, fmt.Errorf("geometry %q must look like 1920x1080@60", s)
+		}
+		if n < field.low || n > field.top {
+			return Geometry{}, fmt.Errorf("geometry %q: %s %d is outside %d-%d",
+				s, field.name, n, field.low, field.top)
+		}
+		*field.into = n
+	}
+	return g, nil
+}
+
+// digits parses a plain decimal number: no sign, no fraction, no spaces.
+func digits(s string) (int, bool) {
+	if s == "" || len(s) > 5 {
+		return 0, false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.Atoi(s)
+	return n, err == nil
+}
+
+// MaxSize is the cap passed to castr-airplay as -max-size, "WxH", or "" when
+// the config file did not choose a geometry.
+func (c Capture) MaxSize() string {
+	if !c.GeometrySet {
+		return ""
+	}
+	g, err := ParseGeometry(c.Geometry)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%dx%d", g.Width, g.Height)
 }
 
 // AirPlay holds doubletake's settings.
@@ -114,7 +216,7 @@ type Config struct {
 // Default returns the configuration castr uses with no file present.
 func Default() Config {
 	return Config{
-		Capture: Capture{FPS: 30, Encoder: "auto"},
+		Capture: Capture{FPS: 30, Encoder: "auto", Geometry: DefaultGeometry, Codec: "auto"},
 		Chromecast: Chromecast{
 			Port:           8010,
 			Width:          1280,
@@ -167,9 +269,11 @@ func Load(path string) (Config, error) {
 	// Decoded ONTO the defaults, so a file that sets one key keeps sensible
 	// values for the rest. Decoding into a zero struct gave fps 0 and an empty
 	// port range to anyone who set only a bitrate.
-	if err := toml.Unmarshal(raw, &cfg); err != nil {
+	meta, err := toml.Decode(string(raw), &cfg)
+	if err != nil {
 		return Default(), fmt.Errorf("parsing %s: %w", path, err)
 	}
+	cfg.Capture.GeometrySet = meta.IsDefined("capture", "geometry")
 
 	// Repaired, not rejected. Rejecting would fall back to the defaults and
 	// silently discard the user's encoder and fps along with the one bad
@@ -198,6 +302,23 @@ func (c *Config) repair() []string {
 			c.AirPlay.TargetLatencyMS, MinSafeLatencyMS, MinSafeLatencyMS))
 		c.AirPlay.TargetLatencyMS = MinSafeLatencyMS
 	}
+
+	// A bad geometry or codec falls back rather than failing the config: the
+	// fallback is what castr did before either key existed.
+	if g, err := ParseGeometry(c.Capture.Geometry); err != nil {
+		notes = append(notes, fmt.Sprintf("%v; using %s", err, DefaultGeometry))
+		c.Capture.Geometry = DefaultGeometry
+		c.Capture.GeometrySet = false // the fallback is not the user's choice, so no cap
+	} else {
+		c.Capture.Geometry = g.String()
+	}
+	codec := strings.ToLower(strings.TrimSpace(c.Capture.Codec))
+	if !slices.Contains(Codecs, codec) {
+		notes = append(notes, fmt.Sprintf("invalid codec %q, expected one of %s; using auto",
+			c.Capture.Codec, strings.Join(Codecs, ", ")))
+		codec = "auto"
+	}
+	c.Capture.Codec = codec
 	return notes
 }
 
