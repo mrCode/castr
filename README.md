@@ -43,7 +43,8 @@ castr pin                  # type the code a receiver is showing
 ```
 
 **Mirror** shows this screen on the receiver. **Extend** gives you a second
-desktop on it, on a virtual output named `castr`.
+desktop on it, on a virtual output named `castr` — 1920x1080 unless you set
+another size (see [Stream size and codec](#stream-size-and-codec)).
 
 Mirror does *not* change your panel's mode — a 240 Hz display stays at 240 Hz.
 It captures the screen you choose at the share prompt and lets doubletake scale
@@ -161,6 +162,9 @@ state. Left-click opens the menu, right-click stops.
 [capture]
 fps = 30
 encoder = "auto"            # auto | vaapi | nvenc | x264
+# geometry = "2560x1440@60" # leave unset for 1920x1080@60; see Stream size
+                            # and codec
+codec = "auto"              # auto | h264 | hevc
 
 [chromecast]
 port = 8010                 # the receiver fetches the stream from this port
@@ -188,6 +192,33 @@ audio = true                # false turns sound off for every receiver, Apple TV
 
 Upgrading from omarchy-cast? Your settings and hand-added receivers are copied
 across on first run. omarchy-cast is left untouched and keeps working.
+
+### Stream size and codec
+
+`geometry` is `WxH@R` — width 640–7680, height 360–4320, refresh 24–240. Extend
+creates its output at that size, and in both modes it caps the stream: the
+receiver is never sent more than `WxH`, its aspect kept, and never more than it
+can take. Left unset, extend stays at 1920x1080@60 and nothing is capped.
+
+`codec` is `auto`, `h264` or `hevc`. `auto` leaves the choice to castr-airplay,
+which picks HEVC by itself only on an NVIDIA GPU. `hevc` asks the receiver for
+its largest picture, up to 3840x2160, and encodes with NVENC, then VA-API
+(`vah265enc`, from the `gst-plugin-va` package), then x265 in software;
+`encoder` narrows that to one of them (`x264` means x265 here).
+
+For a 4K second desktop:
+
+```toml
+[capture]
+geometry = "3840x2160@60"
+codec = "hevc"
+```
+
+4K needs a GPU that can encode it at frame rate. An AMD Renoir laptop iGPU
+managed only 21.7 fps at 4K HEVC.
+
+A value castr cannot use — a typo, or `auto` — is ignored with a warning in
+castrd's log (`castrd -v`), and the default applies.
 
 ## Building
 
