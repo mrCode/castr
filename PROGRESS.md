@@ -73,6 +73,26 @@
 > the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
 > (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
 > gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
+> **2026-11-15: sound fixes for 0.4.0** (e731c53..4f63810, on release/0.4.0;
+> rc2 installed here).
+> - A helper that can't capture the sound now gives the laptop its sound back,
+>   with a note saying why. Stand-in: pulsesrc hidden from the helper → note
+>   shown, default back on the speakers mid-cast.
+> - Streams marked node.dont-fallback, node.dont-reconnect or node.dont-move
+>   are left alone. Stand-in: a dont-move stream stayed on the laptop, a
+>   dont-fallback one survived the cast. With no target, a dont-fallback
+>   stream errors out instead of playing, which confirms why they must be
+>   skipped.
+> - A restore that keeps failing is now logged on change.
+> - `castr sound` says a cast may still be starting.
+> - Found: pulsesrc given a missing `.monitor` name falls back to the DEFAULT
+>   OUTPUT's monitor (not the mic), so a missing cast source rarely means
+>   silence.
+> - Not fixed: a Chromecast's sound source vanishing mid-cast (would need a
+>   pipeline rebuild).
+> - Test rig: $S/state/wireplumber must be a symlink to the real
+>   ~/.local/state/wireplumber, or the router sees no output history.
+>
 > **2026-11-15:** @diegosoares tested on an Apple TV 4K (AppleTV14,1, AMD
 > Renoir). 4K HEVC came through at 3840x2160 and held 30 fps at 100% of a core;
 > 1440p60 HEVC ran at 60 fps on 66%, less than 1080p60 H.264 at 88%. Those
