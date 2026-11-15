@@ -554,3 +554,13 @@ func TestCastrSoundWithNoChoicePrintsTheCurrentOne(t *testing.T) {
 		t.Error("asking about a receiver that is not casting succeeded")
 	}
 }
+
+func TestCastrSoundForACastNotListedYetSaysItMayBeStarting(t *testing.T) {
+	h := newHarness(t)
+	if code := h.app.Run([]string{"sound", "airplay:aa:bb"}); code == 0 {
+		t.Fatal("succeeded with nothing casting")
+	}
+	if msg := h.errOut.String(); !strings.Contains(msg, "not casting") || !strings.Contains(msg, "starting") {
+		t.Errorf("message = %q, want it to allow for a cast still starting", msg)
+	}
+}

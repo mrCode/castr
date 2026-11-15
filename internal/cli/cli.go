@@ -350,7 +350,10 @@ func (a *App) sound(args []string) int {
 		}
 		return 0
 	}
-	return a.fail(fmt.Sprintf("not casting to %s", id))
+	// A cast lists from the moment it starts connecting; just before that --
+	// up to a couple of seconds while a restart tears the old cast down --
+	// it is not listed yet.
+	return a.fail(fmt.Sprintf("not casting to %s (if a cast to it is starting, try again in a moment)", id))
 }
 
 func (a *App) add(args []string) int {
