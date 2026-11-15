@@ -152,6 +152,7 @@ func run(idleTimeout time.Duration, verbose bool) error {
 	d.SoundOn = cfg.AirPlay.Audio
 	backend.AudioSource = d.AudioSource
 	backend.SoundLost = d.SoundLost
+	d.Logf = log.Printf
 	castBackend.AudioSource = d.AudioSource
 	d.Notify = func(device discovery.Device, state session.State, reason string) {
 		log.Printf("%s: %s %s", device.Name, state, reason)

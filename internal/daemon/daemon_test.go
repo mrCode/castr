@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -483,6 +484,7 @@ type fakeSound struct {
 	followErr error
 	lose      bool // the next failing Follow forgets every cast, as a lost routing does
 	choices   map[string]sound.Choice
+	retryErrs []error  // what RetryRestore returns, call by call; nil after
 	calls     []string // "attach:a", "detach:a", "set:a:laptop", "follow", "restore", "retry"
 }
 
@@ -551,6 +553,11 @@ func (f *fakeSound) RetryRestore() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("retry")
+	if len(f.retryErrs) > 0 {
+		err := f.retryErrs[0]
+		f.retryErrs = f.retryErrs[1:]
+		return err
+	}
 	return nil
 }
 
@@ -1165,5 +1172,28 @@ func TestSoundLostForACastThatEndedChangesNothing(t *testing.T) {
 	}
 	if _, ok := r.status(t, "a"); ok {
 		t.Error("a note created a session")
+	}
+}
+
+func TestAFailingRestoreIsLoggedWhenItChangesNotEverySecond(t *testing.T) {
+	// The laptop may be silent until a restore succeeds; that has to reach
+	// castrd's log -- once per failure, not once per second.
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	boom := errors.New("pactl: connection refused")
+	snd.retryErrs = []error{boom, boom, boom, errors.New("pw-metadata: timed out"), nil, nil}
+	var logged []string
+	r.daemon.Logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+
+	for i := 0; i < 6; i++ {
+		r.daemon.FollowSound()
+	}
+
+	if len(logged) != 3 {
+		t.Fatalf("logged %d lines, want 3 (first failure, a new failure, success): %q", len(logged), logged)
+	}
+	if !strings.Contains(logged[0], "connection refused") || !strings.Contains(logged[1], "timed out") ||
+		!strings.Contains(logged[2], "back") {
+		t.Errorf("logged %q", logged)
 	}
 }

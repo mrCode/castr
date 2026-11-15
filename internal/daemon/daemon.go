@@ -56,6 +56,8 @@ type Daemon struct {
 	// config's sound setting: with it off, Sound is never called.
 	Sound   Sound
 	SoundOn bool
+	// Logf logs; nil logs nothing.
+	Logf func(format string, args ...any)
 
 	// Graces are fields rather than constants so tests do not sleep for
 	// twelve seconds to prove a rule about twelve seconds.
@@ -72,6 +74,8 @@ type Daemon struct {
 	soundSources map[string]string
 	// soundNotes says why a cast with sound on has no choice.
 	soundNotes map[string]string
+	// restoreErr is the last failure of a pending restore, already logged.
+	restoreErr string
 	// starting holds, by device id, the session a Start in progress
 	// registered. Until that Start returns, an end reported for it leaves the
 	// sound alone: only Start knows whether the cast before it lives on.
@@ -545,7 +549,7 @@ func (d *Daemon) FollowSound() {
 	}
 	d.mu.Unlock()
 	if len(ids) == 0 {
-		_ = d.Sound.RetryRestore() // the next tick retries again
+		d.noteRestore(d.Sound.RetryRestore()) // the next tick retries again
 		return
 	}
 
@@ -567,6 +571,28 @@ func (d *Daemon) FollowSound() {
 			delete(d.soundSources, id)
 			d.soundNotes[id] = "sound is back on the laptop: " + firstLine(err)
 		}
+	}
+}
+
+// noteRestore logs how a retried restore went: its first failure, a failure
+// that changes, and the success after them -- not each tick's retry. Until it
+// succeeds the laptop may be silent, which only the log can explain.
+func (d *Daemon) noteRestore(err error) {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	d.mu.Lock()
+	last := d.restoreErr
+	d.restoreErr = msg
+	d.mu.Unlock()
+	if d.Logf == nil || msg == last {
+		return
+	}
+	if msg != "" {
+		d.Logf("sound: the laptop's sound is not back yet, retrying every second: %v", err)
+	} else {
+		d.Logf("sound: the laptop's sound is back")
 	}
 }
 
