@@ -195,3 +195,30 @@ func TestRestoreLetsTheAppsFollowTheDefaultBack(t *testing.T) {
 		})
 	}
 }
+
+func TestAStreamThatRefusesToFallBackIsLeftWhereItIs(t *testing.T) {
+	// node.dont-fallback, node.dont-reconnect and node.dont-move mark a
+	// stream pinned on purpose: with no target, WirePlumber does not relink
+	// such a stream to the default, it ends it. castr leaves it on the
+	// laptop -- and does not try again every second.
+	for _, prop := range []string{"node.dont-fallback", "node.dont-reconnect", "node.dont-move"} {
+		f := newFakePulse()
+		idx := f.addApp(realSink)
+		f.inputs[len(f.inputs)-1].target = realSink
+		f.inputs[len(f.inputs)-1].props = map[string]string{prop: "true"}
+		r := NewRouter(f.run, t.TempDir())
+
+		mustAttach(t, r, "airplay:A")
+		for i := 0; i < 3; i++ {
+			if err := r.Follow(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := targetClears(f, f.calls, idx); len(got) != 0 {
+			t.Errorf("%s: castr cleared %v on the stream", prop, got)
+		}
+		if got := appOn(t, f, idx); got != realSink {
+			t.Errorf("%s: the stream is on %s, want it left on the laptop", prop, got)
+		}
+	}
+}

@@ -39,6 +39,8 @@ type fakeInput struct {
 	// target WirePlumber stored for its app. "" for a stream that follows
 	// the default, as WirePlumber relinks it (linking.follow-default-target).
 	target string
+	// props are extra stream properties pactl lists, such as node.dont-fallback.
+	props map[string]string
 	// cleared holds which of target.object and target.node have been set
 	// to -1; both clear the target.
 	cleared map[string]bool
@@ -517,8 +519,11 @@ func (f *fakePulse) run(name string, args ...string) (string, error) {
 				s := strconv.Itoa(i.owner)
 				owner = &s
 			}
-			out = append(out, in{Index: i.index, Sink: i.sink, Owner: owner, Mute: i.mute,
-				Props: map[string]string{"application.name": "app-" + strconv.Itoa(i.index), "object.id": strconv.Itoa(nodeOf(i.index))}})
+			props := map[string]string{"application.name": "app-" + strconv.Itoa(i.index), "object.id": strconv.Itoa(nodeOf(i.index))}
+			for k, v := range i.props {
+				props[k] = v
+			}
+			out = append(out, in{Index: i.index, Sink: i.sink, Owner: owner, Mute: i.mute, Props: props})
 		}
 		raw, _ := json.Marshal(out)
 		return string(raw), nil

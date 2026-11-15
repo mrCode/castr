@@ -97,7 +97,16 @@ type sinkInput struct {
 	mute        bool
 	app         string // its application.name
 	node        int    // its object.id, the node's id in PipeWire; -1 if not given
+	// pinned marks a stream that asks not to be moved or relinked
+	// (stayPutProps). castr leaves it where it is.
+	pinned bool
 }
+
+// stayPutProps mark a stream pinned on purpose. With no target, WirePlumber
+// does not relink such a stream to the default: one with node.dont-fallback
+// or node.dont-reconnect is ended instead, and one with node.dont-move is not
+// moved at all -- so castr would clear its target again every second.
+var stayPutProps = []string{"node.dont-fallback", "node.dont-reconnect", "node.dont-move"}
 
 // sourceOutput is a stream recording from a source.
 type sourceOutput struct {
@@ -215,8 +224,14 @@ func listSinkInputs(run Runner) ([]sinkInput, error) {
 		if err != nil {
 			node = -1
 		}
+		pinned := false
+		for _, key := range stayPutProps {
+			if r.Props[key] == "true" {
+				pinned = true
+			}
+		}
 		inputs = append(inputs, sinkInput{index: r.Index, sink: r.Sink, owner: ownerID(r.Owner), mute: r.Mute,
-			app: r.Props["application.name"], node: node})
+			app: r.Props["application.name"], node: node, pinned: pinned})
 	}
 	return inputs, nil
 }
@@ -393,6 +408,9 @@ func appsOn(run Runner, from string) ([]sinkInput, error) {
 func releaseApps(run Runner, apps []sinkInput, from string, logf func(string, ...any)) error {
 	var errs []error
 	for _, in := range apps {
+		if in.pinned {
+			continue // it asked to stay put; see stayPutProps
+		}
 		if in.node < 0 {
 			if logf != nil {
 				logf("sound: stream %d (%s) on %s has no node id to release", in.index, in.app, from)
