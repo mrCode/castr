@@ -73,6 +73,13 @@
 > the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
 > (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
 > gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
+> **2026-11-15:** @diegosoares tested on an Apple TV 4K (AppleTV14,1, AMD
+> Renoir). 4K HEVC came through at 3840x2160 and held 30 fps at 100% of a core;
+> 1440p60 HEVC ran at 60 fps on 66%, less than 1080p60 H.264 at 88%. Those
+> numbers are in the README (45ec714). Thanked on #3 (issuecomment 6899621881),
+> where I also offered the RC for a mirror and sound test. Pinged #11503
+> (issuecomment 6899624386); it had been silent since Nov 6.
+>
 > **2026-11-10: 0.4.0 PREPARED, not released.** It waits for #11503 to verify
 > plugin 1.3.0; do not retarget #11503 before then.
 > - castr branch `release/0.4.0` (from feature/pairing-sync, pushed: no) has
