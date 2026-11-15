@@ -459,6 +459,29 @@ func (d *Daemon) dropSound(id string) {
 	}
 }
 
+// SoundLost gives the laptop its sound back for a cast whose receiver gets
+// none -- the AirPlay helper could not capture it, and casts on without. With
+// the choice on TV the laptop would otherwise be quiet as well, and nothing
+// would play anywhere or say why. The note says why instead, as for a cast
+// whose sound could not be routed at all.
+func (d *Daemon) SoundLost(id, reason string) {
+	if !d.routesSound() {
+		return
+	}
+	d.mu.Lock()
+	_, routed := d.soundSources[id]
+	d.mu.Unlock()
+	if !routed {
+		return
+	}
+	d.dropSound(id)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, casting := d.sessions[id]; casting {
+		d.soundNotes[id] = "sound stays on the laptop: " + reason
+	}
+}
+
 // AudioSource is the source a cast's receiver captures, or "" to leave the
 // backend to its default: sound is off, or it could not be routed.
 func (d *Daemon) AudioSource(id string) string {

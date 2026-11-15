@@ -1127,3 +1127,43 @@ func TestACastThatEndsBeforeItsStartReturnsIsDetached(t *testing.T) {
 		t.Errorf("audio source = %q for a cast that ended, want none", got)
 	}
 }
+
+func TestSoundTheReceiverCannotGetComesBackToTheLaptop(t *testing.T) {
+	// The helper captures the cast's sound itself. When it cannot, it casts
+	// on without sound -- and with the choice on TV the laptop is quiet too,
+	// so nothing plays anywhere and nothing says why.
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	if err := r.daemon.Start(context.Background(), "a", session.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+
+	r.daemon.SoundLost("a", "castr-airplay could not capture it: no such source")
+
+	if n := snd.count("detach:a"); n != 1 {
+		t.Errorf("detach called %d times, want once: the laptop gets its sound back", n)
+	}
+	s, _ := r.status(t, "a")
+	if s.Sound != "" || !strings.HasPrefix(s.SoundNote, "sound stays on the laptop: ") ||
+		!strings.Contains(s.SoundNote, "no such source") {
+		t.Errorf("status = %+v, want no choice and a note saying why", s)
+	}
+	if err := r.daemon.Stop(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	if n := snd.count("detach:a"); n != 1 {
+		t.Errorf("detach called %d times after the stop, want still once", n)
+	}
+}
+
+func TestSoundLostForACastThatEndedChangesNothing(t *testing.T) {
+	r := newRig(t, dev("a", "TV"))
+	snd := r.withSound()
+	r.daemon.SoundLost("a", "late")
+	if n := snd.count("detach:a"); n != 0 {
+		t.Errorf("detach called %d times for no cast", n)
+	}
+	if _, ok := r.status(t, "a"); ok {
+		t.Error("a note created a session")
+	}
+}

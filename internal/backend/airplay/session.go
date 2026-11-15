@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -67,6 +68,9 @@ type Backend struct {
 	PairAgain func(device discovery.Device, mode string) (deviceID string, ok bool, err error)
 	// PairedAgain clears a mark, once a cast that paired again is streaming.
 	PairedAgain func(deviceID string)
+	// SoundLost is told, once per cast, that the receiver gets no sound:
+	// castr-airplay could not capture it and casts on without. Nil ignores it.
+	SoundLost func(deviceID, reason string)
 
 	mu       sync.Mutex
 	sessions map[string]*castSession
@@ -110,6 +114,8 @@ type castSession struct {
 	afterPin sync.Once
 	// pairAgain is the device ID this cast pairs again with, if marked.
 	pairAgain string
+	// soundLost reports a lost sound once.
+	soundLost sync.Once
 }
 
 func (b *Backend) init() {
@@ -408,6 +414,16 @@ func (b *Backend) pump(cs *castSession) {
 		n, err := cs.proc.Read(buf)
 		if n > 0 {
 			cs.scan.Absorb(string(buf[:n]))
+			if b.SoundLost != nil {
+				if why := cs.scan.AudioFailure(); why != "" {
+					// Off this goroutine: the daemon runs pactl to give the
+					// laptop its sound back, and the pipe must keep draining.
+					cs.soundLost.Do(func() {
+						go b.SoundLost(cs.device.ID, filepath.Base(Binary)+
+							" could not capture the cast's sound: "+why)
+					})
+				}
+			}
 			if cs.scan.Ready() {
 				cs.once.Do(func() { close(cs.ready) })
 			}

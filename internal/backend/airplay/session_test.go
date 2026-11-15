@@ -1434,3 +1434,34 @@ func TestAPairAgainWithNoCodePairingInItsModeIsRefused(t *testing.T) {
 		t.Error("the refusal was not reported")
 	}
 }
+
+func TestAReceiverThatGetsNoSoundIsReportedOnce(t *testing.T) {
+	// castr-airplay casts on without sound when it cannot capture it, and
+	// says so only in its log.
+	for _, line := range []string{
+		"2026/11/15 12:00:00 warning: audio capture failed: pulsesrc: no such device (continuing without audio)\n",
+		"2026/11/15 12:00:00 audio streaming error: capture process exited: exit status 1\n",
+	} {
+		h := newHarness(t, readyOutput, line, line)
+		var got []string
+		var mu sync.Mutex
+		h.backend.SoundLost = func(id, reason string) {
+			mu.Lock()
+			got = append(got, id+": "+reason)
+			mu.Unlock()
+		}
+		if err := h.backend.Start(context.Background(), device("airplay:A", "TV"), session.ModeMirror); err != nil {
+			t.Fatal(err)
+		}
+		if !eventually(func() bool { mu.Lock(); defer mu.Unlock(); return len(got) > 0 }) {
+			t.Fatalf("%q: not reported", line)
+		}
+		time.Sleep(20 * time.Millisecond)
+		mu.Lock()
+		if len(got) != 1 || !strings.HasPrefix(got[0], "airplay:A: castr-airplay could not") ||
+			strings.Contains(got[0], "2026/") {
+			t.Errorf("%q: reported %q, want once, without the timestamp", line, got)
+		}
+		mu.Unlock()
+	}
+}

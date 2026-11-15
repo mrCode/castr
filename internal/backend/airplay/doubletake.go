@@ -278,6 +278,26 @@ func (s *Scanner) PortalFailure() string {
 	return ""
 }
 
+// AudioFailure is why the receiver gets no sound, or "" while it does.
+// castr-airplay casts on without sound when it cannot capture it, and says so
+// only in its log:
+//
+//	warning: audio capture failed: <why> (continuing without audio)
+//	audio streaming error: <why>
+func (s *Scanner) AudioFailure() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, line := range strings.Split(s.text, "\n") {
+		for _, marker := range []string{"audio capture failed: ", "audio streaming error: "} {
+			if i := strings.Index(line, marker); i >= 0 {
+				why := strings.TrimSuffix(strings.TrimSpace(line[i+len(marker):]), "(continuing without audio)")
+				return strings.TrimSpace(why)
+			}
+		}
+	}
+	return ""
+}
+
 // Tail returns the last of the output, for diagnostics.
 func (s *Scanner) Tail(limit int) string {
 	s.mu.Lock()
