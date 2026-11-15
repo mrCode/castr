@@ -223,16 +223,29 @@ its largest picture, up to 3840x2160, and encodes with NVENC, then VA-API
 (`vah265enc`, from the `gst-plugin-va` package), then x265 in software;
 `encoder` narrows that to one of them (`x264` means x265 here).
 
-For a 4K second desktop:
+For a sharper second desktop on an Apple TV 4K:
 
 ```toml
 [capture]
-geometry = "3840x2160@60"
+geometry = "2560x1440@60"
 codec = "hevc"
 ```
 
-4K needs a GPU that can encode it at frame rate. An AMD Renoir laptop iGPU
-managed only 21.7 fps at 4K HEVC.
+HEVC is not the expensive choice it sounds like. On an AMD Renoir laptop iGPU
+(VA-API), casting to an Apple TV 4K, 1440p60 HEVC ran at a full 60 fps using
+less CPU than 1080p60 H.264:
+
+| geometry, codec | the TV received | fps | CPU, one core |
+|---|---|---|---|
+| 1920x1080@60, h264 | 1920x1080 | 60 | 88% |
+| 1920x1080@60, hevc | 1920x1080 | 60 | 67% |
+| 2560x1440@60, hevc | 2560x1440 | 60 | 66% |
+| 3840x2160@30, hevc | 3840x2160 | 30 | 100% |
+| 2560x1440@60, h264 | 1920x1080, scaled | 60 | 42% |
+
+4K works, at `geometry = "3840x2160@30"`, but on that iGPU it takes a whole
+core with nothing to spare; 1440p60 is the safer choice there. Measured by
+@diegosoares in [#3](https://github.com/mrCode/castr/issues/3).
 
 A value castr cannot use — a typo, or `auto` — is ignored with a warning in
 castrd's log (`castrd -v`), and the default applies.
