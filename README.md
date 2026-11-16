@@ -112,6 +112,14 @@ pairing until then, so a device pretending to be your Apple TV still cannot
 take its place. **If no code appears on the television, enter nothing** and
 stop the cast: something else answered.
 
+A receiver you added by address and paired before castr 0.3.0 has no address
+on record until a cast to it succeeds, so `castr pair-again <address>` cannot
+find its pairing. If it also appears in `castr list` under its own id, use
+that id. Otherwise the only way back is to delete its entry from the files in
+`~/.local/state/castr/creds/`, which makes the next cast a first contact: castr
+then cannot tell that Apple TV from another device at its address, so do it
+only on a network you trust.
+
 ## Installing
 
 ```bash

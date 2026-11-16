@@ -2,7 +2,10 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -146,5 +149,85 @@ func TestACodePairingIsLookedForInTheCastsOwnMode(t *testing.T) {
 	}
 	if HasCodePairing(dir, "mirror", "42:56:35:AF:76:0F") {
 		t.Error("a pairing made without a code counted")
+	}
+}
+
+func TestPairAgainMarksSetAtOnceAreAllKept(t *testing.T) {
+	// `castr pair-again` and castrd both rewrite the mark file. Two updates at
+	// the same moment must not drop one: a lost mark makes the next cast refuse
+	// the receiver again, and a lost clear asks for its code twice.
+	dir := t.TempDir()
+	const n = 24
+	var body strings.Builder
+	body.WriteString("{")
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			body.WriteString(",")
+		}
+		fmt.Fprintf(&body, `"AA:00:00:00:00:%02X":{"pairing_id":"id-%d","ed25519_public":"pub",`+
+			`"ed25519_seed":"seed","pairing_code":"pin"}`, i, i)
+	}
+	body.WriteString("}")
+	putCreds(t, CredsPath(dir, "mirror"), body.String())
+	// Half of them marked before, to be cleared while the rest are marked.
+	for i := 0; i < n; i += 2 {
+		if _, err := MarkPairAgain(dir, bothModes, fmt.Sprintf("AA:00:00:00:00:%02X", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("AA:00:00:00:00:%02X", i)
+			var err error
+			if i%2 == 0 {
+				err = ClearPairAgain(dir, id)
+			} else {
+				_, err = MarkPairAgain(dir, bothModes, id)
+			}
+			if err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("AA:00:00:00:00:%02X", i)
+		_, marked := PairAgainFor(dir, id, "")
+		if want := i%2 == 1; marked != want {
+			t.Errorf("%s: marked = %v, want %v", id, marked, want)
+		}
+	}
+}
+
+func TestPairAgainExplainsAnAddressNoPairingIsBoundTo(t *testing.T) {
+	// A pairing made before addresses were recorded is bound to none until a
+	// cast to it succeeds. Asked for by address, it cannot be found, and the
+	// error has to say why rather than claim there is no pairing at all.
+	dir := t.TempDir()
+	putCreds(t, CredsPath(dir, "mirror"), `{"FE:5C:81:22:50:38":{"pairing_id":"id-1",`+
+		`"ed25519_public":"pub-1","ed25519_seed":"seed-1","pairing_code":"pin"}}`)
+
+	_, err := MarkPairAgain(dir, bothModes, "10.10.10.231")
+	if !errors.Is(err, ErrNoCodePairing) {
+		t.Fatalf("err = %v, want ErrNoCodePairing", err)
+	}
+	if !strings.Contains(err.Error(), "no address recorded") {
+		t.Errorf("err = %v, want it to explain the unrecorded address", err)
+	}
+
+	// Not for a device ID, nor when every pairing has its address.
+	if _, err := MarkPairAgain(dir, bothModes, "AA:BB:CC:DD:EE:FF"); err == nil ||
+		strings.Contains(err.Error(), "no address recorded") {
+		t.Errorf("by device id: err = %v", err)
+	}
+	putCreds(t, CredsPath(dir, "mirror"), twoReceivers)
+	if _, err := MarkPairAgain(dir, bothModes, "10.10.10.99"); err == nil ||
+		strings.Contains(err.Error(), "no address recorded") {
+		t.Errorf("every pairing bound: err = %v", err)
 	}
 }

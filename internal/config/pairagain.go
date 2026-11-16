@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 // PairAgainMark asks that the next cast to one receiver pair with it again,
@@ -51,6 +53,7 @@ var ErrNoCodePairing = errors.New("no pairing made with a code")
 func MarkPairAgain(stateDir string, modes []string, target string) (PairAgainMark, error) {
 	found := map[string]PairAgainMark{} // by upper-case device ID
 	withoutCode := false
+	unbound := false // a pairing made with a code, with no address recorded
 	for _, mode := range modes {
 		creds, err := readCreds(CredsPath(stateDir, mode))
 		if err != nil {
@@ -58,6 +61,10 @@ func MarkPairAgain(stateDir string, modes []string, target string) (PairAgainMar
 		}
 		for id, entry := range creds {
 			address, _ := entry["receiver_address"].(string)
+			if code, _ := entry["pairing_code"].(string); address == "" &&
+				(code == "pin" || code == "password") && hasAll(entry, identityFields) {
+				unbound = true
+			}
 			if !strings.EqualFold(id, target) && (address == "" || !strings.EqualFold(address, target)) {
 				continue
 			}
@@ -76,6 +83,13 @@ func MarkPairAgain(stateDir string, modes []string, target string) (PairAgainMar
 	case len(found) == 0 && withoutCode:
 		return PairAgainMark{}, fmt.Errorf("%w: %s was paired without a code, so it has none to show",
 			ErrNoCodePairing, target)
+	case len(found) == 0 && unbound && net.ParseIP(target) != nil:
+		// The helper records the address of a pairing made before it kept
+		// addresses only once a cast to it succeeds. Which unbound pairing
+		// is the one at this address is not guessed: that guess is what a
+		// device answering there would exploit.
+		return PairAgainMark{}, fmt.Errorf("%w at %s: a pairing made before castr 0.3.0 has no address "+
+			"recorded until a cast to it succeeds; see Pairing in castr's README", ErrNoCodePairing, target)
 	case len(found) == 0:
 		return PairAgainMark{}, fmt.Errorf("%w with %s", ErrNoCodePairing, target)
 	case len(found) > 1:
@@ -92,6 +106,11 @@ func MarkPairAgain(stateDir string, modes []string, target string) (PairAgainMar
 		mark = m
 	}
 
+	unlock, err := lockMarks(stateDir)
+	if err != nil {
+		return PairAgainMark{}, err
+	}
+	defer unlock()
 	marks := readMarks(stateDir)
 	kept := marks[:0]
 	for _, m := range marks {
@@ -144,6 +163,11 @@ func PairAgainFor(stateDir, deviceID, address string) (PairAgainMark, bool) {
 
 // ClearPairAgain removes a receiver's mark, once a cast has paired with it.
 func ClearPairAgain(stateDir, deviceID string) error {
+	unlock, err := lockMarks(stateDir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	marks := readMarks(stateDir)
 	kept := marks[:0]
 	for _, m := range marks {
@@ -162,6 +186,32 @@ func ClearPairAgain(stateDir, deviceID string) error {
 		return err
 	}
 	return writeMarks(stateDir, kept)
+}
+
+// lockMarks holds the marks for one read and rewrite. `castr pair-again` and
+// castrd both rewrite the file, and without it two rewrites at once each keep
+// what they read, dropping the other's change: a lost mark refuses the
+// receiver again on its next cast, and a lost clear asks for its code twice.
+// The lock is its own file, since the marks file is replaced by rename.
+func lockMarks(stateDir string) (func(), error) {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(PairAgainPath(stateDir)+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+		if err != syscall.EINTR {
+			break
+		}
+	}
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("locking %s: %w", f.Name(), err)
+	}
+	return func() { f.Close() }, nil // closing releases the lock
 }
 
 // readMarks reads the marks; a missing or unreadable file holds none, which
