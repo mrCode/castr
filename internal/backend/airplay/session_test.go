@@ -1465,3 +1465,29 @@ func TestAReceiverThatGetsNoSoundIsReportedOnce(t *testing.T) {
 		mu.Unlock()
 	}
 }
+
+func TestASpawnerThatFailsAfterStartingAChildHasItStopped(t *testing.T) {
+	// The Spawner contract allows returning a child and an error together. The
+	// error wins -- the cast is reported failed -- so the child must not be
+	// left behind, holding a portal node and the GPU with nothing to stop it.
+	h := newHarness(t, readyOutput)
+	spawn := h.backend.Spawn
+	h.backend.Spawn = func(ctx context.Context, argv []string) (Process, error) {
+		p, _ := spawn(ctx, argv)
+		return p, errors.New("could not open its stdin")
+	}
+
+	err := h.backend.Start(context.Background(), device("a", "One"), session.ModeMirror)
+	if err == nil {
+		t.Fatal("Start succeeded with a failing spawner")
+	}
+	h.mu.Lock()
+	procs := append([]*fakeProc{}, h.procs...)
+	h.mu.Unlock()
+	if len(procs) != 1 {
+		t.Fatalf("spawned %d children, want 1", len(procs))
+	}
+	if !procs[0].wasTerminated() {
+		t.Error("the child the spawner returned with its error was left running")
+	}
+}

@@ -209,6 +209,12 @@ func (b *Backend) Start(ctx context.Context, device discovery.Device, mode strin
 	}
 	proc, err := b.Spawn(ctx, argv)
 	if err != nil {
+		if proc != nil {
+			// A spawner may fail after its child started. The error wins, so
+			// the child goes too, rather than cast with nothing to stop it.
+			proc.Terminate()
+			proc.Wait()
+		}
 		b.undo(cs)
 		msg := fmt.Sprintf("%s failed to start: %v", Binary, err)
 		b.emit(device, session.Failed, msg)
