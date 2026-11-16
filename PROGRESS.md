@@ -73,6 +73,16 @@
 > the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
 > (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
 > gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
+> **2026-11-16: upstream took #67.** omarroth closed omarroth/doubletake#67:
+> its three commits are in doubletake v0.6.0 (911deee, ed6ffeb, e0dd0c3, under
+> the user's name). None of the castr branch's 16 later commits went in:
+> video key never in the clear (b17e8eb), pair again by the pairing's own
+> code, address binding, sound source, VA-API HEVC, -max-size, audio margin.
+> README/PKGBUILD/package doc now say so (f451488). Posted: note to the
+> reviewer on #11503 (issuecomment 6914268615), thanks on #67 offering the
+> rest as separate PRs (issuecomment 6914269091). After 0.4.0: those PRs
+> (video key first), and rebase the helper on v0.6.0 as castr-airplay-3.
+>
 > **2026-11-16:** rc2 checked on the real Apple TV: sound switched TV →
 > Laptop → Both → TV mid-cast, and stopping restored the speakers with no
 > castr sinks or modules left. release/0.4.0 pushed (a29a978). Leftovers
