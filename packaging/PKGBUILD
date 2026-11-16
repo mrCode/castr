@@ -11,10 +11,10 @@ license=('MIT' 'LGPL-3.0-only')
 
 # castr's branch of doubletake (github.com/mrCode/doubletake, branch castr),
 # built here as castr-airplay. castr ships its own rather than depending on
-# whichever doubletake is installed, because its security depends on it:
-# upstream doubletake does not authenticate a receiver it has paired with, so a
-# device on the LAN answering at a paired Apple TV's address receives the
-# screen. The fix is offered upstream as omarroth/doubletake#67.
+# whichever doubletake is installed, because its security depends on it.
+# Upstream authenticates a receiver it has paired with only from v0.6.0, which
+# took castr's fix (omarroth/doubletake#67) but not the branch's later
+# hardening, nor the flags castr passes for sound, HEVC and the stream size.
 _airplay=castr-airplay-1
 
 # avahi: castr asks it what is on the network rather than running its own mDNS

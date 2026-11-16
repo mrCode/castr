@@ -132,12 +132,17 @@ encoding on Intel or AMD, also install `gst-plugin-va`.
 **For an Apple TV**, `castr-airplay` speaks AirPlay. It is doubletake, built
 by castr's package from [castr's branch](https://github.com/mrCode/doubletake/tree/castr)
 and installed in `/usr/lib/castr`, where nothing else looks. castr ships its own
-rather than using whichever doubletake is installed because doubletake upstream
-does not check that an Apple TV it has paired with really is that Apple TV:
-another device on the network answering at its address receives your screen.
-castr's branch checks, and refuses one that cannot prove it; the fix is offered
-upstream as [omarroth/doubletake#67](https://github.com/omarroth/doubletake/pull/67).
-`doubletake-git` is not used.
+rather than using whichever doubletake is installed. Before v0.6.0, doubletake
+did not check that an Apple TV it has paired with really is that Apple TV, so
+another device on the network answering at its address received your screen.
+castr's fix for that,
+[omarroth/doubletake#67](https://github.com/omarroth/doubletake/pull/67), is in
+doubletake from v0.6.0. castr's branch goes further: it never sends the video
+key where the network can read it, pairs again only with the kind of code a
+pairing was made with, and remembers which Apple TV was paired at an address.
+It also carries what castr needs and upstream lacks: sound from a source castr
+names, HEVC on AMD and Intel, and a cap on the stream size. `doubletake-git` is
+not used.
 
 **For a Chromecast**, nothing speaks it but castr — the capture, the encoding
 and the HTTP server are all castr's own, built on GStreamer.

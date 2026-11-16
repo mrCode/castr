@@ -3,11 +3,13 @@
 // castr-airplay is doubletake, built by castr's own package from castr's branch
 // of it (github.com/mrCode/doubletake, tags castr-airplay-*) and installed
 // where nothing else looks. castr ships it rather than depending on whatever
-// doubletake is installed because castr's security depends on it: doubletake
-// upstream does not authenticate a receiver it has paired with, and the fix
-// (omarroth/doubletake#67) had no answer for weeks. One child runs per
-// session; castr reads its output to learn what happened, and cleans up after
-// it.
+// doubletake is installed because castr's security depends on it. Upstream
+// authenticates a receiver it has paired with only from v0.6.0, which took
+// castr's fix (omarroth/doubletake#67) and none of the branch's later
+// hardening, nor the flags castr passes for sound, HEVC and size.
+//
+// One child runs per session; castr reads its output to learn what happened,
+// and cleans up after it.
 package airplay
 
 import (
