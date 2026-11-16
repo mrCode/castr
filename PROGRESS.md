@@ -76,7 +76,7 @@
 > **2026-11-16:** rc2 checked on the real Apple TV: sound switched TV →
 > Laptop → Both → TV mid-cast, and stopping restored the speakers with no
 > castr sinks or modules left. release/0.4.0 pushed (a29a978). Leftovers
-> fixed, not yet pushed:
+> fixed and pushed (a1db0f6); rc3 built with check() and installed here:
 > - the mark file is locked (pair-again.json.lock, flock) for each read and
 >   rewrite, so `castr pair-again` and castrd no longer drop each other's
 >   change;
@@ -86,8 +86,9 @@
 >   what to do. Not guessed: which unbound pairing is at an address is what
 >   an impostor there would exploit.
 > - preview.png: the user does not want the first screenshots used (personal
->   information on screen); they were deleted and the commit dropped. Retake
->   it from a clean desktop.
+>   information on screen); they were deleted and the commit dropped. Retaken
+>   from an empty desktop, the receiver's address masked as 10.10.XX.XXX at
+>   the user's request: plugin release-1.4.0 9d20acb, pushed.
 >
 > **2026-11-15: sound fixes for 0.4.0** (e731c53..4f63810, on release/0.4.0;
 > rc2 installed here).
@@ -129,8 +130,7 @@
 >   not tagged).
 > - Release candidate castr 0.4.0rc1 built with check() (both suites pass) and
 >   installed here; the bar widget file equals the packaged one.
-> - preview.png in the plugin repo predates the SOUND row. Optional: retake it
->   during a cast.
+> - preview.png retaken with the SOUND row (9d20acb, 2026-11-16).
 >
 > RELEASE DAY, each outward step confirmed with the user:
 > 1. doubletake: `git tag -a castr-airplay-2 2d16870 -m "castr-airplay 2: audio
