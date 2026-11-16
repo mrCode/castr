@@ -73,6 +73,22 @@
 > the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
 > (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
 > gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
+> **2026-11-16:** rc2 checked on the real Apple TV: sound switched TV →
+> Laptop → Both → TV mid-cast, and stopping restored the speakers with no
+> castr sinks or modules left. release/0.4.0 pushed (a29a978). Leftovers
+> fixed, not yet pushed:
+> - the mark file is locked (pair-again.json.lock, flock) for each read and
+>   rewrite, so `castr pair-again` and castrd no longer drop each other's
+>   change;
+> - a Spawn that returns a child with its error has the child terminated;
+> - `castr pair-again <address>` for a pairing with no address recorded
+>   (made before 0.3.0, never cast to since) says why, and the README says
+>   what to do. Not guessed: which unbound pairing is at an address is what
+>   an impostor there would exploit.
+> - preview.png: the user does not want the first screenshots used (personal
+>   information on screen); they were deleted and the commit dropped. Retake
+>   it from a clean desktop.
+>
 > **2026-11-15: sound fixes for 0.4.0** (e731c53..4f63810, on release/0.4.0;
 > rc2 installed here).
 > - A helper that can't capture the sound now gives the laptop its sound back,
@@ -153,10 +169,11 @@
 >   the same address was still refused, and the mark was kept. The reset
 >   receiver then asked for a code and streamed; next cast needed no code.
 > - Known minors, not fixed:
->   - the CLI and the daemon both rewrite the mark file, so one update can be
->     lost (costs a refusal or one extra code, never safety);
->   - a manual receiver paired before addresses were recorded can't be marked
->     by address;
+>   - (fixed 2026-11-16) the CLI and the daemon both rewrite the mark file,
+>     so one update can be lost (costs a refusal or one extra code, never
+>     safety);
+>   - (explained 2026-11-16) a manual receiver paired before addresses were
+>     recorded can't be marked by address;
 >   - a password pair-again lets a device naming itself as the receiver try
 >     to crack the password offline. This is the helper's design, and the
 >     message warns about it.
@@ -181,7 +198,8 @@
 >   the helper's output ended, so a restart skipped its pull; two starts
 >   in one mode raced the pull; and a crash after the code was reported as
 >   a missing code. Not fixed: a Spawn that returns both a process and an
->   error leaks the process; the real spawner never does that.
+>   error leaks the process; the real spawner never does that. (Fixed
+>   2026-11-16.)
 > - Stand-in, isolated XDG_STATE_HOME/XDG_CONFIG_HOME with audio off, receiver
 >   `-auth pin -profile modern`:
 >   - this branch: mirror took the code and showed streaming after 4 s;
