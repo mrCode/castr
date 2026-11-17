@@ -73,6 +73,15 @@
 > the same bursts on earlier bad days (Aug 5, 6, 11, 19) and none on good ones
 > (Aug 7, 16, 17, Oct 4). Capture stack upgraded 2026-10-21 (pipewire 1.6.9,
 > gst 1.28.8, mesa 26.2.5, hyprland 0.56.2-4, intel-media-driver 26.3.5).
+> **2026-11-17: castr#4 (dokuhebi).** Chromecast mirror freezes after 30-40 s
+> on 0.3.0, xdph "Out of buffers". Most likely the pipeline-clock stall: 0.3.0's
+> pipeline lacks provide-clock=false (8d54b88 came after the v0.3.0 tag; it is
+> in 0.4.0). Not yet confirmed on a Chromecast for more than a minute. Their
+> side note was real: encoder = "x264" gave High 4:4:4 (yuv444p), refused with
+> LOAD_FAILED. Fixed by capping the profile at High (output yuv420p,
+> Constrained Baseline), checked with castr's own argv on a test pattern.
+> Not replied on #4 yet.
+>
 > **2026-11-16: upstream took #67.** omarroth closed omarroth/doubletake#67:
 > its three commits are in doubletake v0.6.0 (911deee, ed6ffeb, e0dd0c3, under
 > the user's name). None of the castr branch's 16 later commits went in:
