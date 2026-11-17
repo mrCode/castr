@@ -154,6 +154,7 @@ func (o Options) Args() []string {
 	case HLS:
 		args = append(args, "!", o.Encoder)
 		args = append(args, h264EncoderArgs(o.Encoder, o.Bitrate, o.keyInterval(fps))...)
+		args = append(args, h264ProfileCaps(o.Encoder)...)
 		// Every segment must open with a keyframe or a receiver joining
 		// mid-stream shows nothing until the next one.
 		args = append(args, "!", "h264parse", "config-interval=-1", "!", "hls.video")
@@ -170,6 +171,7 @@ func (o Options) Args() []string {
 	default:
 		args = append(args, "!", o.Encoder)
 		args = append(args, h264EncoderArgs(o.Encoder, o.Bitrate, o.keyInterval(fps))...)
+		args = append(args, h264ProfileCaps(o.Encoder)...)
 		// config-interval=-1 repeats the parameter sets before every keyframe.
 		// A receiver that joins a live stream mid-flight has not seen the
 		// header, and without repeats it waits for one that never comes.
@@ -246,6 +248,20 @@ func h264EncoderArgs(element string, bitrate, keyInterval int) []string {
 			args = append(args, "bitrate="+strconv.Itoa(bitrate))
 		}
 		return args
+	}
+	return nil
+}
+
+// h264ProfileCaps pins what x264enc may produce. Fed the screen's RGB frames
+// it picks 4:4:4, the closest match, and encodes High 4:4:4 Predictive -- a
+// profile a Chromecast refuses with LOAD_FAILED and no other word (castr#4).
+// Capped at High it takes 4:2:0 frames instead; measured, the segments then
+// come out yuv420p and, with ultrafast using no High tools, marked
+// Constrained Baseline, which every H.264 decoder plays. The hardware
+// encoders only ever take 4:2:0, so they are left alone.
+func h264ProfileCaps(element string) []string {
+	if element == "x264enc" {
+		return []string{"!", "video/x-h264,profile=high"}
 	}
 	return nil
 }

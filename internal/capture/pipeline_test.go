@@ -113,3 +113,22 @@ func TestThePipelineDiesWithCastrd(t *testing.T) {
 		t.Errorf("SysProcAttr %+v, want Pdeathsig SIGTERM and Setpgid", a)
 	}
 }
+
+func TestSoftwareH264IsAProfileAReceiverDecodes(t *testing.T) {
+	// Fed the screen's RGB frames, x264enc picks 4:4:4 and encodes High 4:4:4
+	// Predictive, which a Chromecast refuses with LOAD_FAILED (castr#4).
+	// Pinning the profile makes it take 4:2:0 frames instead.
+	for _, container := range []Container{HLS, FragmentedMP4} {
+		opts := hlsOptions()
+		opts.Container = container
+		got := strings.Join(opts.Args(), " ")
+		if !strings.Contains(got, "! video/x-h264,profile=high ! h264parse") {
+			t.Errorf("container %v: args = %q, want x264enc pinned to the High profile", container, got)
+		}
+
+		opts.Encoder = "vah264enc"
+		if got := strings.Join(opts.Args(), " "); strings.Contains(got, "video/x-h264") {
+			t.Errorf("container %v: args = %q, want hardware encoders left alone", container, got)
+		}
+	}
+}
