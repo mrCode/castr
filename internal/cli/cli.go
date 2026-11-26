@@ -29,6 +29,10 @@ type App struct {
 	// Socket is only needed by the status command, which deliberately does not
 	// go through Client -- see client.SessionsQuietly.
 	Socket string
+
+	// StateDir is castr's state directory; empty means daemon.StateDir().
+	// `castr delay` keeps its offsets there.
+	StateDir string
 }
 
 // Usage is printed for `castr help` and for an unknown command.
@@ -47,6 +51,8 @@ const Usage = `castr — cast this screen to an AirPlay receiver
   castr forget <id>          drop a registered receiver
   castr quit                 stop the background daemon
   castr reset-share [mode]   forget which output to share, so you get asked again
+  castr delay [id] [ms]      audio/video sync for a receiver: positive delays
+                             the audio, negative delays the video
   castr version              print the version
 `
 
@@ -75,6 +81,8 @@ func (a *App) Run(args []string) int {
 		return a.add(args[1:])
 	case "forget":
 		return a.forget(args[1:])
+	case "delay":
+		return a.delay(args[1:])
 	case "reset-share":
 		return a.resetShare(args[1:])
 	case "quit":

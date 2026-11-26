@@ -309,3 +309,17 @@ func TestTheHelperIsCastrsOwnNotWhateverIsOnPath(t *testing.T) {
 		t.Errorf("argv[0] = %q, want the helper %q", argv[0], Binary)
 	}
 }
+
+// Each cast is told its receiver's audio/video offset file.
+func TestEachCastGetsItsReceiversOffsetFile(t *testing.T) {
+	cfg := config()
+	cfg.AVOffsetDir = "/state"
+	got := argvString(BuildArgv(cfg, "airplay:10:23:9A", "10.0.0.5", 7000, ""))
+	if !strings.Contains(got, "-av-offset-file /state/av-offset/airplay_10_23_9A") {
+		t.Fatalf("argv has no offset file for the receiver: %s", got)
+	}
+
+	if got := argvString(BuildArgv(config(), "airplay:10:23:9A", "10.0.0.5", 7000, "")); strings.Contains(got, "-av-offset-file") {
+		t.Fatalf("an offset file without a state directory: %s", got)
+	}
+}

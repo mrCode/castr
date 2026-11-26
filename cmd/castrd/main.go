@@ -325,6 +325,7 @@ func newAirPlayBackend(cfg config.Config, stateDir string) *airplay.Backend {
 			Bitrate:         cfg.AirPlay.Bitrate,
 			TargetLatencyMS: cfg.AirPlay.TargetLatencyMS,
 			Audio:           cfg.AirPlay.Audio,
+			AVOffsetDir:     stateDir,
 		},
 		Hypr:         hyprctl,
 		ReadyTimeout: time.Duration(cfg.AirPlay.ReadyTimeout * float64(time.Second)),

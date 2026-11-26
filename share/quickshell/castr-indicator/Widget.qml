@@ -56,6 +56,104 @@ Panel {
   // ---- read only while the panel is open ----
   property var devices: []
   property var sessions: []
+
+  // ---- audio/video sync (`castr delay`) ----
+  // Per receiver, in ms: positive delays the audio, negative delays the video
+  // so the audio comes sooner. Kept here by device id, not in the rows: the
+  // rows are rebuilt whenever the session list changes.
+  property var delays: ({})
+  property var delayQueue: []
+  property string delayPendingId: ""
+  property int delayPendingMs: 0
+  property bool delayRerun: false
+  readonly property int delayRange: 1000
+  property string hoveredSyncId: ""      // the row whose sync line the mouse is over
+  property string delayEditingId: ""     // the row whose value box is being typed into
+  property string delayDraft: ""
+  property int delayBeforeEdit: 0
+
+  function isAirPlay(deviceId) { return String(deviceId || "").indexOf("airplay:") === 0 }
+
+  function delayOf(deviceId) {
+    var v = root.delays[deviceId]
+    return v === undefined ? 0 : v
+  }
+
+  function setDelayLocal(deviceId, ms) {
+    var copy = {}
+    for (var k in root.delays) copy[k] = root.delays[k]
+    copy[deviceId] = ms
+    root.delays = copy
+  }
+
+  function delayText(ms) {
+    return ms === 0 ? "0 ms" : (ms > 0 ? "+" : "\u2212") + Math.abs(ms) + " ms"
+  }
+
+  function delayMeaning(ms) {
+    return ms > 0 ? "audio later" : ms < 0 ? "audio sooner" : "no correction"
+  }
+
+  function loadDelays() {
+    var q = []
+    for (var i = 0; i < root.sessions.length; i++)
+      if (root.isAirPlay(root.sessions[i].device_id)) q.push(root.sessions[i].device_id)
+    root.delayQueue = q
+    root.nextDelayRead()
+  }
+
+  function nextDelayRead() {
+    if (delayReadProc.running || root.delayQueue.length === 0) return
+    var id = root.delayQueue[0]
+    root.delayQueue = root.delayQueue.slice(1)
+    delayReadProc.deviceId = id
+    delayReadProc.command = ["castr", "delay", id]
+    delayReadProc.running = true
+  }
+
+  // The slider moves the number at once; castr is told after a short pause,
+  // and castr-airplay picks the file up within a quarter second. The slider
+  // and the arrow keys move in 10 ms steps; a typed value is taken as typed.
+  function setDelay(deviceId, ms, exact) {
+    ms = exact ? Math.round(ms) : Math.round(ms / 10) * 10
+    ms = Math.max(-root.delayRange, Math.min(root.delayRange, ms))
+    root.setDelayLocal(deviceId, ms)
+    root.delayPendingId = deviceId
+    root.delayPendingMs = ms
+    delayWriteTimer.restart()
+  }
+
+  function nudgeDelay(deviceId, step) {
+    root.setDelay(deviceId, root.delayOf(deviceId) + step)
+  }
+
+  function beginDelayEdit(deviceId) {
+    root.delayEditingId = deviceId
+    root.delayBeforeEdit = root.delayOf(deviceId)
+    root.delayDraft = String(root.delayBeforeEdit)
+  }
+
+  // Each keystroke that leaves a whole number moves the slider with it.
+  function typeDelay(text) {
+    root.delayDraft = text
+    if (/^[+-]?[0-9]+$/.test(text)) root.setDelay(root.delayEditingId, parseInt(text, 10), true)
+  }
+
+  function endDelayEdit(keep) {
+    if (root.delayEditingId === "") return
+    if (!keep) root.setDelay(root.delayEditingId, root.delayBeforeEdit, true)
+    root.delayEditingId = ""
+    root.delayDraft = ""
+    keyCatcher.forceActiveFocus()
+  }
+
+  function writeDelay() {
+    if (root.delayPendingId === "") return
+    if (delayWriteProc.running) { root.delayRerun = true; return }
+    delayWriteProc.command = ["castr", "delay", root.delayPendingId, String(root.delayPendingMs)]
+    root.delayPendingId = ""
+    delayWriteProc.running = true
+  }
   property bool loading: false
   property string listError: ""
   property string mode: "mirror"         // the pill, applied to whatever is clicked
@@ -348,13 +446,44 @@ Panel {
       onStreamFinished: {
         try {
           var data = JSON.parse(String(text || "").trim() || "{}")
-          root.sessions = data.sessions || []
+          var next = data.sessions || []
+          // Same list, same rows: reassigning would rebuild every row, and a
+          // sync slider being dragged with it.
+          if (JSON.stringify(next) !== JSON.stringify(root.sessions)) root.sessions = next
         } catch (e) {
-          root.sessions = []
+          if (root.sessions.length > 0) root.sessions = []
         }
         root.updatePinSession()
+        root.loadDelays()
       }
     }
+  }
+
+  Process {
+    id: delayReadProc
+    property string deviceId: ""
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var v = parseInt(String(text || "").trim(), 10)
+        // A value from disk never overrides one the user is still setting.
+        var busy = delayWriteTimer.running || delayWriteProc.running
+            || root.delayPendingId === delayReadProc.deviceId
+        if (!isNaN(v) && !busy) root.setDelayLocal(delayReadProc.deviceId, v)
+      }
+    }
+    onExited: root.nextDelayRead()
+  }
+
+  Process {
+    id: delayWriteProc
+    onExited: if (root.delayRerun) { root.delayRerun = false; root.writeDelay() }
+  }
+
+  Timer {
+    id: delayWriteTimer
+    interval: 120
+    repeat: false
+    onTriggered: root.writeDelay()
   }
 
   Process {
@@ -502,8 +631,12 @@ Panel {
       anchors.fill: parent
       // The catcher claims every key before descendants see it, so while the
       // code field is being typed into it has to stand aside.
-      blocked: pinInput.activeFocus
+      blocked: pinInput.activeFocus || root.delayEditingId !== ""
       onCloseRequested: root.close()
+      // Left/Right with the mouse over a sync line: 10 ms a press, like the slider.
+      onMoveRequested: function(dx, dy) {
+        if (dy === 0 && dx !== 0 && root.hoveredSyncId !== "") root.nudgeDelay(root.hoveredSyncId, dx * 10)
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
       Column {
@@ -731,9 +864,12 @@ Panel {
         Repeater {
           model: root.sessions
           delegate: BorderSurface {
+            id: liveRow
             required property var modelData
+            readonly property bool showSync: root.isAirPlay(modelData.device_id)
+                && modelData.state !== "awaiting_pin"
             width: column.width
-            height: Style.space(38)
+            height: Style.space(38) + (showSync ? syncLine.height : 0)
             color: root.rowLive
             radius: Style.cornerRadius
             borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
@@ -741,7 +877,7 @@ Panel {
             Text {
               anchors.left: parent.left
               anchors.leftMargin: Style.spacing.lg
-              anchors.verticalCenter: parent.verticalCenter
+              anchors.verticalCenter: liveStop.verticalCenter
               anchors.right: liveStop.left
               anchors.rightMargin: Style.spacing.md
               text: modelData.state === "awaiting_pin" ? modelData.name + " — waiting for the code"
@@ -758,13 +894,159 @@ Panel {
               id: liveStop
               anchors.right: parent.right
               anchors.rightMargin: Style.spacing.md
-              anchors.verticalCenter: parent.verticalCenter
+              anchors.top: parent.top
+              anchors.topMargin: (Style.space(38) - height) / 2
               iconText: "󰓛"
               tooltipText: "Stop casting to " + root.plain(modelData.name)
               foreground: root.fg
               hoverColor: Color.urgent
               fontFamily: root.bar.fontFamily
               onClicked: root.stopCast(modelData.device_id)
+            }
+
+            // Audio/video sync: left brings the audio sooner (delays the
+            // video), right makes it later. Right-click puts it back to 0.
+            Item {
+              id: syncLine
+              visible: liveRow.showSync
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              anchors.leftMargin: Style.spacing.lg
+              anchors.rightMargin: Style.spacing.md
+              height: Math.max(Style.space(44), syncValue.implicitHeight + Style.spacing.sm * 2)
+
+              HoverHandler {
+                onHoveredChanged: {
+                  if (hovered) root.hoveredSyncId = liveRow.modelData.device_id
+                  else if (root.hoveredSyncId === liveRow.modelData.device_id) root.hoveredSyncId = ""
+                }
+              }
+
+              Text {
+                id: syncLabel
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Sync"
+                textFormat: Text.PlainText
+                color: Qt.darker(root.fg, 1.2)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              PanelSlider {
+                id: syncSlider
+                bar: root.bar
+                anchors.left: syncLabel.right
+                anchors.leftMargin: Style.spacing.md
+                anchors.right: syncValue.left
+                anchors.rightMargin: Style.spacing.md
+                anchors.verticalCenter: parent.verticalCenter
+                minimum: -root.delayRange
+                maximum: root.delayRange
+                step: 10
+                integer: true
+                tickCount: 3
+                value: Math.max(-root.delayRange, Math.min(root.delayRange, root.delayOf(liveRow.modelData.device_id)))
+                onMoved: function(v) { root.setDelay(liveRow.modelData.device_id, v) }
+                onReleased: function(v) { root.setDelay(liveRow.modelData.device_id, v) }
+                onRightClicked: root.setDelay(liveRow.modelData.device_id, 0)
+              }
+
+              Column {
+                id: syncValue
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                width: Style.space(84)
+                spacing: Style.spacing.xxs
+
+                // Click to type a value: digits and a sign, Enter keeps it, Escape
+                // puts the old one back, Up/Down step 10 ms. The slider follows
+                // every whole number typed.
+                Item {
+                  id: syncBox
+                  readonly property string deviceId: liveRow.modelData.device_id
+                  readonly property bool editing: root.delayEditingId === deviceId
+                  width: parent.width
+                  height: syncBoxText.implicitHeight + Style.spacing.xs * 2
+                  activeFocusOnTab: true
+
+                  Rectangle {
+                    anchors.fill: parent
+                    radius: Style.cornerRadius
+                    color: "transparent"
+                    border.width: 1
+                    border.color: syncBox.editing ? Color.accent : Qt.darker(root.fg, 1.8)
+                  }
+
+                  Text {
+                    id: syncBoxText
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: Style.spacing.sm
+                    anchors.rightMargin: Style.spacing.sm
+                    anchors.verticalCenter: parent.verticalCenter
+                    horizontalAlignment: Text.AlignRight
+                    text: syncBox.editing ? root.delayDraft + "\u258f" : root.delayText(root.delayOf(syncBox.deviceId))
+                    textFormat: Text.PlainText
+                    color: root.fg
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.body
+                    elide: Text.ElideLeft
+                  }
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.IBeamCursor
+                    onClicked: {
+                      root.beginDelayEdit(syncBox.deviceId)
+                      syncBox.forceActiveFocus()
+                    }
+                  }
+
+                  onActiveFocusChanged: if (!activeFocus && editing) root.endDelayEdit(true)
+
+                  Keys.onPressed: function(event) {
+                    if (!syncBox.editing) return
+                    if (event.key === Qt.Key_Escape) { root.endDelayEdit(false); event.accepted = true; return }
+                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Tab) {
+                      root.endDelayEdit(true); event.accepted = true; return
+                    }
+                    if (event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
+                      root.nudgeDelay(syncBox.deviceId, event.key === Qt.Key_Up ? 10 : -10)
+                      root.delayDraft = String(root.delayOf(syncBox.deviceId))
+                      event.accepted = true
+                      return
+                    }
+                    if (event.key === Qt.Key_Backspace) {
+                      root.typeDelay(root.delayDraft.slice(0, -1)); event.accepted = true; return
+                    }
+                    if (event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) return
+                    var t = String(event.text || "")
+                    if (t.length !== 1) return
+                    if ((t === "-" || t === "+") && root.delayDraft === "") { root.typeDelay(t); event.accepted = true; return }
+                    if (t === "-" || t === "+") {
+                      // A sign typed after digits flips the number.
+                      var d = root.delayDraft.replace(/^[+-]/, "")
+                      root.typeDelay((t === "-" ? "-" : "") + d); event.accepted = true; return
+                    }
+                    if (t >= "0" && t <= "9" && root.delayDraft.replace(/^[+-]/, "").length < 4) {
+                      root.typeDelay((root.delayDraft === "0" ? "" : root.delayDraft) + t)
+                      event.accepted = true
+                    }
+                  }
+                }
+
+                Text {
+                  width: parent.width
+                  horizontalAlignment: Text.AlignRight
+                  text: root.delayMeaning(root.delayOf(liveRow.modelData.device_id))
+                  textFormat: Text.PlainText
+                  color: Qt.darker(root.fg, 1.2)
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
             }
           }
         }
