@@ -47,9 +47,15 @@ type Backend struct {
 	Creds        CredsFor
 	Emit         Emit
 	ReadyTimeout time.Duration
+	// Pactl, when set, gives each cast that carries audio a virtual output
+	// (audio.go).
+	Pactl Pactl
 
 	mu       sync.Mutex
 	sessions map[string]*castSession
+
+	audioMu sync.Mutex
+	audio   audioRoute
 }
 
 type castSession struct {
@@ -62,6 +68,8 @@ type castSession struct {
 	// never a sibling session's. Mirror sets up nothing; only extend has an
 	// output to own.
 	virtual string
+	// audio: this session holds a share of the virtual audio output.
+	audio bool
 
 	// The startup outcome and the child's exit race each other. Both sides
 	// record their half under the backend mutex, and whichever finds the other
@@ -131,6 +139,8 @@ func (b *Backend) Start(ctx context.Context, device discovery.Device, mode strin
 		b.emit(device, session.Failed, err.Error())
 		return err
 	}
+
+	b.routeAudio(cs)
 
 	proc, err := b.Spawn(ctx, BuildArgv(b.Config, device.ID, device.Address, device.Port, credsPath))
 	if err != nil {
@@ -453,6 +463,7 @@ func (b *Backend) Stop(ctx context.Context, device discovery.Device) error {
 
 // undo removes only what this session created.
 func (b *Backend) undo(cs *castSession) error {
+	b.releaseAudio(cs)
 	var firstErr error
 	if cs.virtual != "" {
 		if err := hypr.RemoveOutput(b.Hypr, cs.virtual); err != nil {
