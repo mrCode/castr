@@ -50,6 +50,23 @@ type Backend struct {
 
 	mu       sync.Mutex
 	sessions map[string]*castSession
+
+	// cfgMu guards Config once castrd re-reads config.toml before each cast:
+	// SetConfig may run while another cast starts.
+	cfgMu sync.RWMutex
+}
+
+// SetConfig replaces the configuration the next cast starts with.
+func (b *Backend) SetConfig(c Config) {
+	b.cfgMu.Lock()
+	b.Config = c
+	b.cfgMu.Unlock()
+}
+
+func (b *Backend) config() Config {
+	b.cfgMu.RLock()
+	defer b.cfgMu.RUnlock()
+	return b.Config
 }
 
 type castSession struct {
@@ -132,7 +149,7 @@ func (b *Backend) Start(ctx context.Context, device discovery.Device, mode strin
 		return err
 	}
 
-	proc, err := b.Spawn(ctx, BuildArgv(b.Config, device.ID, device.Address, device.Port, credsPath))
+	proc, err := b.Spawn(ctx, BuildArgv(b.config(), device.ID, device.Address, device.Port, credsPath))
 	if err != nil {
 		b.undo(cs)
 		msg := fmt.Sprintf("%s failed to start: %v", Binary, err)
@@ -258,7 +275,7 @@ func (b *Backend) failureMessage(cs *castSession, exited bool) string {
 			"broken -- check custom_picker_binary in ~/.config/hypr/xdph.conf.\n"+
 			"  3. Only then suspect the network: the receiver connects BACK to this "+
 			"machine on %s.",
-		cs.device.Name, b.ReadyTimeout.Seconds(), Binary, b.Config.PortRange)
+		cs.device.Name, b.ReadyTimeout.Seconds(), Binary, b.config().PortRange)
 }
 
 // settle records the startup outcome exactly once.

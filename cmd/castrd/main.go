@@ -121,12 +121,19 @@ func run(idleTimeout time.Duration, verbose bool) error {
 		PairCommand: codePromptCommand,
 		Start:       startDetached,
 	}
-	backend := newAirPlayBackend(cfg, stateDir)
+	// config.toml is re-read before each cast when it changed, so `castr set`
+	// and the bar's settings apply to the next cast without a restart.
+	live := newLiveConfig(filepath.Join(configDir, "config.toml"), cfg)
+	backend := newAirPlayBackendLive(cfg, live.current, stateDir)
 	castBackend := newChromecastBackend(cfg)
+	live.onChange = func(c config.Config) {
+		backend.SetConfig(airPlayConfig(c))
+		castBackend.SetConfig(chromecastConfig(c))
+	}
 
 	d := daemon.New(registry, map[string]daemon.Backend{
-		discovery.ProtocolAirPlay:    backend,
-		discovery.ProtocolChromecast: castBackend,
+		discovery.ProtocolAirPlay:    reloadingBackend{Backend: backend, refresh: live.refresh},
+		discovery.ProtocolChromecast: reloadingBackend{Backend: castBackend, refresh: live.refresh},
 	})
 	d.IdleTimeout = idleTimeout
 	d.Notify = func(device discovery.Device, state session.State, reason string) {
@@ -277,7 +284,11 @@ func castrBinary() string {
 // It takes no state directory: a Chromecast needs no pairing keys, so there is
 // nothing about a receiver worth keeping between casts.
 func newChromecastBackend(cfg config.Config) *chromecast.Backend {
-	return chromecast.NewLive(chromecast.Config{
+	return chromecast.NewLive(chromecastConfig(cfg), nil)
+}
+
+func chromecastConfig(cfg config.Config) chromecast.Config {
+	return chromecast.Config{
 		FPS:            cfg.Capture.FPS,
 		Encoder:        gstEncoder(cfg.Capture.Encoder),
 		Bitrate:        cfg.Chromecast.Bitrate,
@@ -285,7 +296,7 @@ func newChromecastBackend(cfg config.Config) *chromecast.Backend {
 		Height:         cfg.Chromecast.Height,
 		Port:           cfg.Chromecast.Port,
 		SegmentSeconds: cfg.Chromecast.SegmentSeconds,
-	}, nil)
+	}
 }
 
 // gstEncoder turns castr's encoder name into a GStreamer element.
@@ -317,19 +328,29 @@ func gstHasElement(name string) bool {
 
 // newAirPlayBackend wires doubletake up to the real system.
 func newAirPlayBackend(cfg config.Config, stateDir string) *airplay.Backend {
+	return newAirPlayBackendLive(cfg, func() config.Config { return cfg }, stateDir)
+}
+
+// newAirPlayBackendLive builds the backend whose spawned children read the
+// current configuration (see reload.go).
+func newAirPlayBackendLive(cfg config.Config, current func() config.Config, stateDir string) *airplay.Backend {
 	return &airplay.Backend{
-		Config: airplay.Config{
-			PortRange:       cfg.AirPlay.PortRange,
-			FPS:             cfg.Capture.FPS,
-			Encoder:         cfg.Capture.Encoder,
-			Bitrate:         cfg.AirPlay.Bitrate,
-			TargetLatencyMS: cfg.AirPlay.TargetLatencyMS,
-			Audio:           cfg.AirPlay.Audio,
-		},
+		Config:       airPlayConfig(cfg),
 		Hypr:         hyprctl,
 		ReadyTimeout: time.Duration(cfg.AirPlay.ReadyTimeout * float64(time.Second)),
 		Creds:        func(mode string) (string, error) { return credsPath(stateDir, mode) },
-		Spawn:        spawner(cfg, stateDir),
+		Spawn:        liveSpawner(current, stateDir),
+	}
+}
+
+func airPlayConfig(cfg config.Config) airplay.Config {
+	return airplay.Config{
+		PortRange:       cfg.AirPlay.PortRange,
+		FPS:             cfg.Capture.FPS,
+		Encoder:         cfg.Capture.Encoder,
+		Bitrate:         cfg.AirPlay.Bitrate,
+		TargetLatencyMS: cfg.AirPlay.TargetLatencyMS,
+		Audio:           cfg.AirPlay.Audio,
 	}
 }
 

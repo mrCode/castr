@@ -56,6 +56,23 @@ Panel {
   // ---- read only while the panel is open ----
   property var devices: []
   property var sessions: []
+
+  // ---- settings (`castr set` / `castr settings`) ----
+  // castrd re-reads config.toml before each cast, so these apply to the next
+  // cast; a running one keeps what it started with.
+  property string settingsFps: ""
+  property bool settingsGpu: false
+  property var settingPending: null
+
+  function loadSettings() {
+    if (root.installed && !settingsProc.running && !setProc.running) settingsProc.running = true
+  }
+
+  function applySetting(args) {
+    if (setProc.running) { root.settingPending = args; return }
+    setProc.command = ["castr", "set"].concat(args)
+    setProc.running = true
+  }
   property bool loading: false
   property string listError: ""
   property string mode: "mirror"         // the pill, applied to whatever is clicked
@@ -123,6 +140,7 @@ Panel {
 
   function refreshPanel() {
     if (!root.opened || !root.installed) return
+    root.loadSettings()
     root.loading = true
     if (!listProc.running) listProc.running = true
     if (!sessionsProc.running) sessionsProc.running = true
@@ -354,6 +372,33 @@ Panel {
         }
         root.updatePinSession()
       }
+    }
+  }
+
+  Process {
+    id: settingsProc
+    command: ["castr", "settings", "--json"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var s = JSON.parse(String(text || "").trim() || "{}")
+          if (s.fps !== undefined) root.settingsFps = String(s.fps)
+          if (s.gpu_capture !== undefined) root.settingsGpu = !!s.gpu_capture
+        } catch (e) {}
+      }
+    }
+  }
+
+  Process {
+    id: setProc
+    onExited: {
+      if (root.settingPending !== null) {
+        var next = root.settingPending
+        root.settingPending = null
+        root.applySetting(next)
+        return
+      }
+      root.loadSettings()
     }
   }
 
@@ -852,6 +897,112 @@ Panel {
             fontFamily: root.bar.fontFamily
             onClicked: root.resetShare()
           }
+        }
+
+        // ---------- settings ----------
+        PanelSectionHeader {
+          visible: root.installed
+          width: parent.width
+          text: "SETTINGS"
+          textFormat: Text.PlainText
+          foreground: root.fg
+          fontFamily: root.bar.fontFamily
+        }
+
+        Item {
+          width: parent.width
+          visible: root.installed
+          implicitHeight: Math.max(fpsLabel.implicitHeight, fpsGroup.implicitHeight)
+
+          Text {
+            id: fpsLabel
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width: Style.space(96)
+            text: "Frame rate"
+            textFormat: Text.PlainText
+            color: root.fg
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          ButtonGroup {
+            id: fpsGroup
+            anchors.left: fpsLabel.right
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            options: [
+              { value: "24", label: "24" },
+              { value: "30", label: "30" },
+              { value: "60", label: "60" }
+            ]
+            value: root.settingsFps
+            foreground: root.fg
+            accent: Color.accent
+            fontFamily: root.bar.fontFamily
+            onChanged: function(value) {
+              root.settingsFps = value
+              root.applySetting(["fps", value])
+            }
+          }
+        }
+
+        Item {
+          width: parent.width
+          visible: root.installed
+          implicitHeight: Math.max(gpuLabels.implicitHeight, gpuSwitch.implicitHeight)
+
+          Column {
+            id: gpuLabels
+            anchors.left: parent.left
+            anchors.right: gpuSwitch.left
+            anchors.rightMargin: Style.spacing.md
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.spacing.xxs
+
+            Text {
+              width: parent.width
+              text: "GPU capture"
+              textFormat: Text.PlainText
+              color: root.fg
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.body
+            }
+            Text {
+              width: parent.width
+              text: "AirPlay only. Much less CPU; turn off if the TV shows black."
+              textFormat: Text.PlainText
+              color: Qt.darker(root.fg, 1.5)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
+          ToggleSwitch {
+            id: gpuSwitch
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            checked: root.settingsGpu
+            foreground: root.fg
+            onToggled: {
+              root.settingsGpu = !root.settingsGpu
+              root.applySetting(["gpu-capture", root.settingsGpu ? "on" : "off"])
+            }
+          }
+        }
+
+        Text {
+          width: parent.width
+          visible: root.installed
+          text: root.sessions.length > 0
+            ? "Changes apply from the next cast; the one running keeps its settings."
+            : "Changes apply from the next cast."
+          textFormat: Text.PlainText
+          color: Qt.darker(root.fg, 1.5)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
         }
 
         Text {
