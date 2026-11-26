@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	castrconfig "github.com/mrCode/castr/internal/config"
 )
 
 // helperPath is where castr's package installs castr-airplay.
@@ -74,6 +76,9 @@ type Config struct {
 	Bitrate         int
 	TargetLatencyMS int
 	Audio           bool
+	// AVOffsetDir, when set, is castr's state directory: each cast gets its
+	// receiver's audio/video offset file there (`castr delay`).
+	AVOffsetDir string
 }
 
 // hwaccel maps castr's encoder vocabulary onto doubletake's.
@@ -127,6 +132,9 @@ func BuildArgv(cfg Config, deviceID, address string, port int, credsPath string)
 	}
 	if !cfg.Audio {
 		argv = append(argv, "-no-audio")
+	}
+	if cfg.AVOffsetDir != "" && deviceID != "" {
+		argv = append(argv, "-av-offset-file", castrconfig.AVOffsetPath(cfg.AVOffsetDir, deviceID))
 	}
 
 	// AirPlay PAIRING credentials -- the keys handed over after the user types
