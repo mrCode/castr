@@ -330,6 +330,7 @@ func newAirPlayBackend(cfg config.Config, stateDir string) *airplay.Backend {
 		ReadyTimeout: time.Duration(cfg.AirPlay.ReadyTimeout * float64(time.Second)),
 		Creds:        func(mode string) (string, error) { return credsPath(stateDir, mode) },
 		Spawn:        spawner(cfg, stateDir),
+		Pactl:        func(args ...string) (string, error) { return hyprctl("pactl", args...) },
 	}
 }
 
