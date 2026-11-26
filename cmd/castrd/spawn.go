@@ -80,7 +80,14 @@ func (c *child) Wait() error {
 
 // spawner returns a Spawner that starts doubletake in its own process group.
 func spawner(cfg config.Config, stateDir string) airplay.Spawner {
+	return liveSpawner(func() config.Config { return cfg }, stateDir)
+}
+
+// liveSpawner reads the configuration at each spawn, so a config.toml change
+// reaches the next cast (see reload.go).
+func liveSpawner(current func() config.Config, stateDir string) airplay.Spawner {
 	return func(ctx context.Context, argv []string) (airplay.Process, error) {
+		cfg := current()
 		cmd := exec.Command(argv[0], argv[1:]...)
 
 		// Setpgid is load-bearing, not hygiene: without it Terminate's negative

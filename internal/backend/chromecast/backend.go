@@ -103,6 +103,23 @@ type Backend struct {
 
 	mu       sync.Mutex
 	sessions map[string]*castSession
+
+	// cfgMu guards Config once castrd re-reads config.toml before each cast:
+	// SetConfig may run while another cast starts.
+	cfgMu sync.RWMutex
+}
+
+// SetConfig replaces the configuration the next cast starts with.
+func (b *Backend) SetConfig(c Config) {
+	b.cfgMu.Lock()
+	b.Config = c
+	b.cfgMu.Unlock()
+}
+
+func (b *Backend) config() Config {
+	b.cfgMu.RLock()
+	defer b.cfgMu.RUnlock()
+	return b.Config
 }
 
 type castSession struct {
@@ -264,7 +281,8 @@ func (b *Backend) keepVerifying(cs *castSession, pipeline Pipeline) {
 }
 
 func (b *Backend) start(ctx context.Context, cs *castSession, mode string) error {
-	timeout := b.Config.StartTimeout
+	cfg := b.config() // one consistent copy for the whole start
+	timeout := cfg.StartTimeout
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
@@ -303,10 +321,10 @@ func (b *Backend) start(ctx context.Context, cs *castSession, mode string) error
 
 	opts := capture.Options{
 		NodeID: portal.Node(), Serial: serial, FD: portal.Descriptor(),
-		FPS: b.Config.FPS, Encoder: b.Config.Encoder, Bitrate: b.Config.Bitrate,
-		Width: b.Config.Width, Height: b.Config.Height,
+		FPS: cfg.FPS, Encoder: cfg.Encoder, Bitrate: cfg.Bitrate,
+		Width: cfg.Width, Height: cfg.Height,
 		Container: capture.HLS, Dir: dir,
-		SegmentSeconds: b.Config.SegmentSeconds,
+		SegmentSeconds: cfg.SegmentSeconds,
 	}
 	pipeline, err := b.StartCapture(opts)
 	if err != nil {
@@ -324,7 +342,7 @@ func (b *Backend) start(ctx context.Context, cs *castSession, mode string) error
 		return err
 	}
 
-	server, err := b.Serve(bind, b.Config.Port, dir)
+	server, err := b.Serve(bind, cfg.Port, dir)
 	if err != nil {
 		return err
 	}

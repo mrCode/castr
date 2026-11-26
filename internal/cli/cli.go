@@ -29,6 +29,10 @@ type App struct {
 	// Socket is only needed by the status command, which deliberately does not
 	// go through Client -- see client.SessionsQuietly.
 	Socket string
+
+	// ConfigPath is config.toml; empty means config.Path(). Used by
+	// `castr set` and `castr settings`.
+	ConfigPath string
 }
 
 // Usage is printed for `castr help` and for an unknown command.
@@ -47,6 +51,10 @@ const Usage = `castr — cast this screen to an AirPlay receiver
   castr forget <id>          drop a registered receiver
   castr quit                 stop the background daemon
   castr reset-share [mode]   forget which output to share, so you get asked again
+  castr settings [--json]    show the frame rate and GPU capture settings
+  castr set fps <1-120>      capture frame rate, from the next cast
+  castr set gpu-capture on|off
+                             AirPlay: take the screen on the GPU (less CPU)
   castr version              print the version
 `
 
@@ -75,6 +83,10 @@ func (a *App) Run(args []string) int {
 		return a.add(args[1:])
 	case "forget":
 		return a.forget(args[1:])
+	case "set":
+		return a.set(args[1:])
+	case "settings":
+		return a.settings(args[1:])
 	case "reset-share":
 		return a.resetShare(args[1:])
 	case "quit":
